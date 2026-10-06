@@ -1,4 +1,13 @@
-import { computeCrop, computeMaxZoom, maxDigitalFactor, MIN_CROP_PIXELS, visibleRegion } from '../crop';
+import {
+  ASSUMED_MAX_PHOTO,
+  computeCrop,
+  computeMaxZoom,
+  estimatePhotoSize,
+  isFramingClamped,
+  maxDigitalFactor,
+  MIN_CROP_PIXELS,
+  visibleRegion,
+} from '../crop';
 
 // iPhone-like screen: 393 x 852 pt.
 const SCREEN = 852 / 393;
@@ -74,5 +83,39 @@ describe('computeMaxZoom', () => {
 
   it('allows more zoom with a higher-resolution sensor', () => {
     expect(computeMaxZoom(1, 6048, 8064, SCREEN)).toBeGreaterThan(computeMaxZoom(1, 3024, 4032, SCREEN));
+  });
+});
+
+describe('estimatePhotoSize', () => {
+  it('uses the learned size when available', () => {
+    expect(estimatePhotoSize([{ width: 8064, height: 6048 }], { width: 3000, height: 4000 })).toEqual({
+      width: 3000,
+      height: 4000,
+    });
+  });
+
+  it('caps a 48 MP device at the 12 MP assumption', () => {
+    expect(estimatePhotoSize([{ width: 8064, height: 6048 }, { width: 4032, height: 3024 }])).toEqual(
+      ASSUMED_MAX_PHOTO,
+    );
+  });
+
+  it('uses a smaller supported resolution in portrait', () => {
+    expect(estimatePhotoSize([{ width: 3264, height: 2448 }, { width: 1920, height: 1080 }])).toEqual({
+      width: 2448,
+      height: 3264,
+    });
+  });
+
+  it('falls back to 12 MP when nothing is reported', () => {
+    expect(estimatePhotoSize([])).toEqual(ASSUMED_MAX_PHOTO);
+  });
+});
+
+describe('isFramingClamped', () => {
+  it('detects a requested factor beyond the 1 MP floor', () => {
+    const max = maxDigitalFactor(2448, 3264, SCREEN);
+    expect(isFramingClamped(2448, 3264, SCREEN, max)).toBe(false);
+    expect(isFramingClamped(2448, 3264, SCREEN, max * 1.05)).toBe(true);
   });
 });

@@ -3,7 +3,7 @@
  */
 import { ENHANCE_PATH, INSTALL_ID_HEADER, LIMITS } from '@/shared/enhance';
 
-import { createEnhanceHandler, type LogEvent } from '../enhanceHandler';
+import { createEnhanceHandler, type LogEvent, readBodyWithLimit } from '../enhanceHandler';
 import { createRateLimiter } from '../rateLimit';
 import { makeGif, makeJpeg } from '../testing/fixtures';
 import { memoryStore } from '../memoryStore';
@@ -162,5 +162,43 @@ describe('POST /api/enhance', () => {
       { event: 'enhance', outcome: 'ok', mode: 'creative', ms: expect.any(Number) },
       { event: 'enhance', outcome: 'invalid_mode', ms: expect.any(Number) },
     ]);
+  });
+
+  it('rejects an oversized body sent without Content-Length, without reading it all', async () => {
+    const { handler, fal } = setup();
+    const chunk = new Uint8Array(1024 * 1024);
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        controller.enqueue(chunk);
+      },
+    });
+    const request = new Request(`http://localhost${ENHANCE_PATH}`, {
+      method: 'POST',
+      body: endless,
+      headers: { [INSTALL_ID_HEADER]: INSTALL_ID, 'content-type': 'multipart/form-data; boundary=x' },
+      // Required by Node for streaming request bodies.
+      duplex: 'half',
+    } as RequestInit);
+    expect(request.headers.get('content-length')).toBeNull();
+
+    const res = await call(handler, request);
+    expect(res.status).toBe(413);
+    expect(res.body.error.code).toBe('file_too_large');
+    expect(pulled).toBeLessThan(25);
+    expect(fal.subscribe).not.toHaveBeenCalled();
+  });
+});
+
+describe('readBodyWithLimit', () => {
+  it('returns the whole body when under the limit', async () => {
+    const request = new Request('http://localhost/', { method: 'POST', body: new Uint8Array([1, 2, 3]) });
+    expect(Array.from(await readBodyWithLimit(request, 10))).toEqual([1, 2, 3]);
+  });
+
+  it('throws file_too_large past the limit', async () => {
+    const request = new Request('http://localhost/', { method: 'POST', body: new Uint8Array(11) });
+    await expect(readBodyWithLimit(request, 10)).rejects.toMatchObject({ code: 'file_too_large' });
   });
 });

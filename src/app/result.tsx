@@ -11,7 +11,7 @@ import { enhancementRunner } from '@/enhance/runner';
 import { saveToGallery } from '@/media/saveToGallery';
 import type { EnhanceMode } from '@/shared/enhance';
 import { hasUnsavedEnhancement, useSession } from '@/state/session';
-import { useSettings } from '@/state/settings';
+import { useSettings, useSettingsHydrated } from '@/state/settings';
 import { colors, spacing } from '@/ui/theme';
 
 export default function ResultScreen() {
@@ -21,8 +21,13 @@ export default function ResultScreen() {
   const shownMode = useSession((s) => s.shownMode);
   const request = useSession((s) => s.request);
   const { cloudConsent, setCloudConsent, mode: preferredMode, setMode } = useSettings();
+  // Saved consent loads asynchronously; nothing below may act on `cloudConsent` until it has.
+  const hydrated = useSettingsHydrated();
+  const [consentRequested, setConsentRequested] = useState(false);
+  const [consentAnswered, setConsentAnswered] = useState(false);
   // First capture without a consent decision: ask before uploading anything.
-  const [consentVisible, setConsentVisible] = useState(() => !!original && cloudConsent === 'unknown');
+  const consentVisible =
+    consentRequested || (hydrated && !!original && cloudConsent === 'unknown' && !consentAnswered);
   const [saving, setSaving] = useState(false);
   const started = useRef(false);
 
@@ -33,7 +38,7 @@ export default function ResultScreen() {
   const enhance = useCallback(
     (mode: EnhanceMode) => {
       if (useSettings.getState().cloudConsent !== 'granted') {
-        setConsentVisible(true);
+        setConsentRequested(true);
         return;
       }
       enhancementRunner.start(mode);
@@ -43,10 +48,10 @@ export default function ResultScreen() {
 
   // Start automatically after capture (specs/enhanced-photo-review: Automatic enhancement after capture).
   useEffect(() => {
-    if (started.current || !original) return;
+    if (!hydrated || started.current || !original) return;
     started.current = true;
     if (cloudConsent === 'granted') enhancementRunner.start(preferredMode);
-  }, [cloudConsent, original, preferredMode]);
+  }, [cloudConsent, hydrated, original, preferredMode]);
 
   // Confirm before discarding an unsaved enhancement (specs/enhanced-photo-review: Return to camera).
   useEffect(
@@ -84,25 +89,42 @@ export default function ResultScreen() {
   };
 
   const onConsent = (granted: boolean) => {
-    setConsentVisible(false);
+    setConsentRequested(false);
+    setConsentAnswered(true);
     setCloudConsent(granted ? 'granted' : 'declined');
     if (granted) enhancementRunner.start(selectedMode);
   };
 
   const save = async (which: 'enhanced' | 'original' | 'both') => {
     if (!original) return;
-    const uris: string[] = [];
-    if (which !== 'original' && enhanced) uris.push(enhanced.uri);
-    if (which !== 'enhanced') uris.push(original.uri);
+    const { saved: alreadySaved, markSaved } = useSession.getState();
+    // Skip files already in the library so a retry after a partial save doesn't duplicate them.
+    const wanted: { uri: string; kind: 'enhanced' | 'original' }[] = [];
+    if (which !== 'original' && enhanced && shownMode && !alreadySaved.enhanced[shownMode]) {
+      wanted.push({ uri: enhanced.uri, kind: 'enhanced' });
+    }
+    if (which !== 'enhanced' && !alreadySaved.original) wanted.push({ uri: original.uri, kind: 'original' });
+    if (wanted.length === 0) {
+      Alert.alert('Already saved', 'This photo is already in your library.');
+      return;
+    }
+
     setSaving(true);
-    const outcome = await saveToGallery(uris);
+    const { outcome, saved } = await saveToGallery(wanted.map((w) => w.uri));
     setSaving(false);
+    for (const item of wanted) {
+      if (!saved.includes(item.uri)) continue;
+      markSaved(item.kind === 'original' ? { original: true } : { enhancedMode: shownMode ?? undefined });
+    }
+
     if (outcome === 'saved') {
-      useSession.getState().markSaved({
-        original: which !== 'enhanced',
-        enhancedMode: which !== 'original' && shownMode ? shownMode : undefined,
-      });
-      Alert.alert('Saved', which === 'both' ? 'Both photos were saved to your library.' : 'Saved to your library.');
+      Alert.alert('Saved', wanted.length > 1 ? 'Both photos were saved to your library.' : 'Saved to your library.');
+    } else if (outcome === 'partial') {
+      const savedKind = wanted.find((w) => saved.includes(w.uri))?.kind;
+      Alert.alert(
+        'Partly saved',
+        `The ${savedKind} photo was saved, but the other one couldn't be. Tap Save to try again.`,
+      );
     } else if (outcome === 'denied') {
       Alert.alert('Photos access needed', 'Allow superzoom to add photos in Settings to save your images.', [
         { text: 'Cancel', style: 'cancel' },
@@ -180,7 +202,7 @@ export default function ResultScreen() {
         {cloudConsent === 'declined' && !enhanced && request.status === 'idle' && (
           <View style={styles.status}>
             <Text style={styles.statusText}>Cloud enhancement is off.</Text>
-            <Pressable onPress={() => setConsentVisible(true)} accessibilityRole="button" hitSlop={8}>
+            <Pressable onPress={() => setConsentRequested(true)} accessibilityRole="button" hitSlop={8}>
               <Text style={styles.link}>Enhance</Text>
             </Pressable>
           </View>

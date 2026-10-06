@@ -63,7 +63,20 @@ export async function requestEnhancement(
   return body;
 }
 
-/** Downloads the enhanced image so it can be compared offline and saved at full resolution. */
+/** Deletes a cached file, ignoring files that are already gone. */
+export function deleteLocalFile(uri: string): void {
+  try {
+    const file = new File(uri);
+    if (file.exists) file.delete();
+  } catch {
+    // Best effort: the OS clears the cache directory eventually.
+  }
+}
+
+/**
+ * Downloads the enhanced image so it can be compared offline and saved at full resolution.
+ * The cached file is removed if the user cancelled or the download failed.
+ */
 export async function downloadResult(result: EnhanceSuccess, signal: AbortSignal): Promise<LocalImage> {
   const destination = new File(Paths.cache, `enhanced-${result.mode}-${Date.now()}.jpg`);
   try {
@@ -71,6 +84,7 @@ export async function downloadResult(result: EnhanceSuccess, signal: AbortSignal
     if (signal.aborted) throw fail('cancelled');
     return { uri: file.uri, width: result.width, height: result.height };
   } catch (err) {
+    deleteLocalFile(destination.uri);
     if (err instanceof EnhanceRequestError) throw err;
     throw fail(signal.aborted ? 'cancelled' : 'network');
   }

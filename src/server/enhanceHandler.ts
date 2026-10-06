@@ -48,6 +48,36 @@ interface MultipartForm {
   get(name: string): Blob | string | null;
 }
 
+const fileTooLarge = () => new ApiError('file_too_large', 'Images must be 20 MB or smaller.', 413);
+
+/**
+ * Reads the request body, giving up as soon as it exceeds `maxBytes`, so a request
+ * with a missing or false Content-Length can't make the route buffer an unbounded body.
+ */
+export async function readBodyWithLimit(request: Request, maxBytes: number): Promise<Uint8Array> {
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw fileTooLarge();
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
 const badRequest = (message: string) => new ApiError('bad_request', message, 400);
 
 async function readImage(form: MultipartForm): Promise<Uint8Array> {
@@ -83,14 +113,17 @@ export function createEnhanceHandler({
         throw new ApiError('missing_install_id', `A valid ${INSTALL_ID_HEADER} header is required.`, 400);
       }
 
-      const declaredLength = Number(request.headers.get('content-length'));
-      if (declaredLength > LIMITS.maxUploadBytes + MULTIPART_SLACK_BYTES) {
-        throw new ApiError('file_too_large', 'Images must be 20 MB or smaller.', 413);
-      }
+      const maxBodyBytes = LIMITS.maxUploadBytes + MULTIPART_SLACK_BYTES;
+      // Cheap early rejection when the client declares its size; the bounded read below covers the rest.
+      if (Number(request.headers.get('content-length')) > maxBodyBytes) throw fileTooLarge();
+      const rawBody = await readBodyWithLimit(request, maxBodyBytes);
 
       let form: MultipartForm;
       try {
-        form = (await request.formData()) as unknown as MultipartForm;
+        const contentType = request.headers.get('content-type') ?? '';
+        form = (await new Response(rawBody as BodyInit, {
+          headers: { 'content-type': contentType },
+        }).formData()) as unknown as MultipartForm;
       } catch {
         throw badRequest('Expected a multipart/form-data body.');
       }

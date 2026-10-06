@@ -66,3 +66,33 @@ export function computeCrop(
   const h = Math.min(region.height, Math.ceil(region.height / factor));
   return { x: Math.floor((width - w) / 2), y: Math.floor((height - h) / 2), width: w, height: h };
 }
+
+export interface Size {
+  width: number;
+  height: number;
+}
+
+/** Telephoto sensors are often 12 MP even when the main lens offers more. */
+export const ASSUMED_MAX_PHOTO: Size = { width: 3024, height: 4032 };
+
+/**
+ * Photo size used for the zoom limit before a real capture at the optical cap is known:
+ * the smaller of the device's largest supported photo resolution and 12 MP, in portrait.
+ */
+export function estimatePhotoSize(supported: readonly Size[], learned?: Size): Size {
+  if (learned) return learned;
+  const largest = supported.reduce<Size | null>(
+    (best, s) => (!best || s.width * s.height > best.width * best.height ? s : best),
+    null,
+  );
+  const pick =
+    largest && largest.width * largest.height < ASSUMED_MAX_PHOTO.width * ASSUMED_MAX_PHOTO.height
+      ? largest
+      : ASSUMED_MAX_PHOTO;
+  return { width: Math.min(pick.width, pick.height), height: Math.max(pick.width, pick.height) };
+}
+
+/** True when the photo is too small for the requested digital factor, so the crop is wider than the preview. */
+export function isFramingClamped(width: number, height: number, screenLongOverShort: number, digitalFactor: number) {
+  return digitalFactor > maxDigitalFactor(width, height, screenLongOverShort) + 1e-6;
+}

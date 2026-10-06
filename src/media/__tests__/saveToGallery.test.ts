@@ -16,7 +16,10 @@ beforeEach(() => jest.resetAllMocks());
 describe('saveToGallery', () => {
   it('saves every file when permission is already granted', async () => {
     ml.getPermissionsAsync.mockResolvedValue(perm(true));
-    expect(await saveToGallery(['file:///a.jpg', 'file:///b.jpg'])).toBe('saved');
+    expect(await saveToGallery(['file:///a.jpg', 'file:///b.jpg'])).toEqual({
+      outcome: 'saved',
+      saved: ['file:///a.jpg', 'file:///b.jpg'],
+    });
     expect(ml.requestPermissionsAsync).not.toHaveBeenCalled();
     expect(ml.Asset.create).toHaveBeenCalledWith('file:///a.jpg');
     expect(ml.Asset.create).toHaveBeenCalledWith('file:///b.jpg');
@@ -25,26 +28,35 @@ describe('saveToGallery', () => {
   it('asks for write-only photo permission the first time', async () => {
     ml.getPermissionsAsync.mockResolvedValue(perm(false, true));
     ml.requestPermissionsAsync.mockResolvedValue(perm(true));
-    expect(await saveToGallery(['file:///a.jpg'])).toBe('saved');
+    expect((await saveToGallery(['file:///a.jpg'])).outcome).toBe('saved');
     expect(ml.requestPermissionsAsync).toHaveBeenCalledWith(true, ['photo']);
   });
 
   it('saves nothing when permission is denied', async () => {
     ml.getPermissionsAsync.mockResolvedValue(perm(false, true));
     ml.requestPermissionsAsync.mockResolvedValue(perm(false, false));
-    expect(await saveToGallery(['file:///a.jpg'])).toBe('denied');
+    expect(await saveToGallery(['file:///a.jpg'])).toEqual({ outcome: 'denied', saved: [] });
     expect(ml.Asset.create).not.toHaveBeenCalled();
   });
 
   it('does not re-prompt once the user has permanently denied', async () => {
     ml.getPermissionsAsync.mockResolvedValue(perm(false, false));
-    expect(await saveToGallery(['file:///a.jpg'])).toBe('denied');
+    expect((await saveToGallery(['file:///a.jpg'])).outcome).toBe('denied');
     expect(ml.requestPermissionsAsync).not.toHaveBeenCalled();
   });
 
   it('reports a failed write', async () => {
     ml.getPermissionsAsync.mockResolvedValue(perm(true));
     (ml.Asset.create as jest.Mock).mockRejectedValue(new Error('disk full'));
-    expect(await saveToGallery(['file:///a.jpg'])).toBe('failed');
+    expect(await saveToGallery(['file:///a.jpg'])).toEqual({ outcome: 'failed', saved: [] });
+  });
+
+  it('reports a partial save with the files that were written', async () => {
+    ml.getPermissionsAsync.mockResolvedValue(perm(true));
+    (ml.Asset.create as jest.Mock).mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('disk full'));
+    expect(await saveToGallery(['file:///enhanced.jpg', 'file:///original.jpg'])).toEqual({
+      outcome: 'partial',
+      saved: ['file:///enhanced.jpg'],
+    });
   });
 });

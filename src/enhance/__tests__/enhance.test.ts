@@ -1,11 +1,28 @@
 import { uploadDimensions } from '@/camera/processCapture';
 import { useSession } from '@/state/session';
 
-import { EnhanceRequestError, enhanceUrl, requestEnhancement } from '../client';
+import { File } from 'expo-file-system';
+
+import { downloadResult, EnhanceRequestError, enhanceUrl, requestEnhancement } from '../client';
 import { ALL_FAILURE_CODES, failureMessage } from '../messages';
 import { createEnhancementRunner } from '../runner';
 
-jest.mock('expo-file-system', () => ({ File: jest.fn(), Paths: {} }));
+jest.mock('expo-file-system', () => {
+  const files = new Map<string, { uri: string; exists: boolean; delete: jest.Mock }>();
+  const File = jest.fn((dirOrUri: unknown, name?: string) => {
+    const uri = name ? `file:///cache/${name}` : String(dirOrUri);
+    if (!files.has(uri)) {
+      const entry = { uri, exists: false, delete: jest.fn(() => void (entry.exists = false)) };
+      files.set(uri, entry);
+    }
+    return files.get(uri);
+  }) as jest.Mock & { downloadFileAsync: jest.Mock };
+  File.downloadFileAsync = jest.fn(async (_url: string, destination: { exists: boolean }) => {
+    destination.exists = true;
+    return destination;
+  });
+  return { File, Paths: { cache: 'cache' }, __files: files };
+});
 jest.mock('@/state/settings', () => ({ getInstallId: jest.fn().mockResolvedValue('install-123') }));
 
 const img = (uri: string, width = 1000, height = 1000) => ({ uri, width, height });
@@ -93,6 +110,40 @@ describe('requestEnhancement', () => {
   });
 });
 
+describe('downloadResult', () => {
+  const result = { url: 'https://fal.media/out.jpg', width: 4000, height: 3000, mode: 'enhance' as const };
+  const fileMock = File as unknown as jest.Mock & { downloadFileAsync: jest.Mock };
+
+  it('returns the downloaded file', async () => {
+    const image = await downloadResult(result, new AbortController().signal);
+    expect(image).toEqual({ uri: expect.stringMatching(/^file:\/\/\/cache\/enhanced-enhance-/), width: 4000, height: 3000 });
+  });
+
+  it('deletes the file when cancelled during the download', async () => {
+    const controller = new AbortController();
+    fileMock.downloadFileAsync.mockImplementationOnce(async (_url: string, destination: { exists: boolean }) => {
+      destination.exists = true;
+      controller.abort();
+      return destination;
+    });
+    const error = await downloadResult(result, controller.signal).catch((e) => e);
+    expect(error.failure.code).toBe('cancelled');
+    const destination = fileMock.mock.results.at(-1)!.value;
+    expect(destination.delete).toHaveBeenCalled();
+    expect(destination.exists).toBe(false);
+  });
+
+  it('cleans up a partial file when the download fails', async () => {
+    fileMock.downloadFileAsync.mockImplementationOnce(async (_url: string, destination: { exists: boolean }) => {
+      destination.exists = true;
+      throw new Error('connection reset');
+    });
+    const error = await downloadResult(result, new AbortController().signal).catch((e) => e);
+    expect(error.failure.code).toBe('network');
+    expect(fileMock.mock.results.at(-1)!.value.exists).toBe(false);
+  });
+});
+
 describe('enhancement runner', () => {
   beforeEach(() => {
     useSession.getState().clear();
@@ -108,12 +159,14 @@ describe('enhancement runner', () => {
   it('ignores a result that arrives after cancel', async () => {
     let finish!: (v: ReturnType<typeof img>) => void;
     const signals: AbortSignal[] = [];
+    const discard = jest.fn();
     const runner = createEnhancementRunner(
       (_u, _m, signal) =>
         new Promise((resolve) => {
           signals.push(signal);
           finish = resolve;
         }),
+      discard,
     );
     const pending = runner.start('pro');
     await Promise.resolve();
@@ -123,6 +176,7 @@ describe('enhancement runner', () => {
     await pending;
     expect(useSession.getState().results).toEqual({});
     expect(useSession.getState().request).toEqual({ status: 'idle' });
+    expect(discard).toHaveBeenCalledWith('late');
     // The original crop is still available.
     expect(useSession.getState().original?.uri).toBe('orig');
   });
@@ -130,12 +184,14 @@ describe('enhancement runner', () => {
   it('aborts the previous run when a new mode starts', async () => {
     const signals: AbortSignal[] = [];
     const resolvers: ((v: ReturnType<typeof img>) => void)[] = [];
+    const discard = jest.fn();
     const runner = createEnhancementRunner(
       (_u, _m, signal) =>
         new Promise((resolve) => {
           signals.push(signal);
           resolvers.push(resolve);
         }),
+      discard,
     );
     const first = runner.start('enhance');
     const second = runner.start('creative');
@@ -144,6 +200,8 @@ describe('enhancement runner', () => {
     resolvers[1](img('fresh'));
     await Promise.all([first, second]);
     expect(useSession.getState().results).toEqual({ creative: img('fresh') });
+    expect(discard).toHaveBeenCalledWith('stale');
+    expect(discard).not.toHaveBeenCalledWith('fresh');
   });
 
   it('records failures', async () => {

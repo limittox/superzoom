@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
+import { useSyncExternalStore } from 'react';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
@@ -42,6 +43,14 @@ export const useSettings = create<SettingsState>()(
     },
   ),
 );
+
+/** True once persisted settings have loaded; decisions based on consent must wait for it. */
+export function useSettingsHydrated(): boolean {
+  return useSyncExternalStore(
+    (onChange) => useSettings.persist.onFinishHydration(onChange),
+    () => useSettings.persist.hasHydrated(),
+  );
+}
 
 const INSTALL_ID_KEY = 'superzoom.installId';
 let installIdPromise: Promise<string> | undefined;

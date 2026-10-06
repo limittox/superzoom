@@ -19,7 +19,7 @@ import { PermissionScreen } from '@/components/PermissionScreen';
 import { ZoomControls } from '@/components/ZoomControls';
 import { useSession } from '@/state/session';
 import { useSettings } from '@/state/settings';
-import { colors, spacing } from '@/ui/theme';
+import { colors, formatZoom, spacing } from '@/ui/theme';
 
 export default function CameraScreen() {
   const permission = useCameraPermission();
@@ -137,14 +137,27 @@ function ZoomCamera() {
     try {
       const result = await zoomCamera.capture();
       if (!result) return;
-      useSession.getState().startSession(result.original, result.upload, result.displayZoom);
-      router.push('/result');
+      const proceed = () => {
+        useSession.getState().startSession(result.original, result.upload, result.displayZoom);
+        router.push('/result');
+      };
+      if (result.framingClamped) {
+        // The real photo was smaller than estimated: keep the preview honest from now on.
+        displayZoom.set(withTiming(result.maxDisplayZoom));
+        Alert.alert(
+          'Zoom limited',
+          `This lens supports up to ${formatZoom(result.maxDisplayZoom)}. The photo was taken at that zoom instead.`,
+          [{ text: 'OK', onPress: proceed }],
+        );
+        return;
+      }
+      proceed();
     } catch (err) {
       Alert.alert('Capture failed', err instanceof Error ? err.message : 'Please try again.');
     } finally {
       setCapturing(false);
     }
-  }, [capturing, flashOpacity, zoomCamera]);
+  }, [capturing, displayZoom, flashOpacity, zoomCamera]);
 
   const onLayout = (e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;

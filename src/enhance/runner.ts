@@ -1,7 +1,7 @@
 import type { EnhanceMode } from '@/shared/enhance';
 import { type EnhanceFailure, type LocalImage, useSession } from '@/state/session';
 
-import { EnhanceRequestError, runEnhancement } from './client';
+import { deleteLocalFile, EnhanceRequestError, runEnhancement } from './client';
 import { failureMessage } from './messages';
 
 type Run = (upload: LocalImage, mode: EnhanceMode, signal: AbortSignal) => Promise<LocalImage>;
@@ -10,7 +10,7 @@ type Run = (upload: LocalImage, mode: EnhanceMode, signal: AbortSignal) => Promi
  * Starts and cancels enhancements for the current capture session. Only the most
  * recent request can update the session; cancelled or superseded requests are dropped.
  */
-export function createEnhancementRunner(run: Run = runEnhancement) {
+export function createEnhancementRunner(run: Run = runEnhancement, discard: (uri: string) => void = deleteLocalFile) {
   let controller: AbortController | null = null;
 
   return {
@@ -23,7 +23,8 @@ export function createEnhancementRunner(run: Run = runEnhancement) {
       const id = beginRequest(mode);
       try {
         const result = await run(upload, mode, current.signal);
-        resolveRequest(id, mode, result);
+        // A result for a cancelled or superseded request is never shown; don't leave it in the cache.
+        if (!resolveRequest(id, mode, result)) discard(result.uri);
       } catch (err) {
         const failure: EnhanceFailure =
           err instanceof EnhanceRequestError

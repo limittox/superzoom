@@ -35,7 +35,8 @@ interface SessionState {
   startSession(original: LocalImage, upload: LocalImage, captureZoom: number): void;
   /** Returns a request ID; results for any other ID are ignored. */
   beginRequest(mode: EnhanceMode): number;
-  resolveRequest(id: number, mode: EnhanceMode, result: LocalImage): void;
+  /** Returns false (and stores nothing) if the request was cancelled or superseded. */
+  resolveRequest(id: number, mode: EnhanceMode, result: LocalImage): boolean;
   failRequest(id: number, mode: EnhanceMode, error: EnhanceFailure): void;
   cancelRequest(): void;
   showMode(mode: EnhanceMode): void;
@@ -68,8 +69,9 @@ export const useSession = create<SessionState>()((set, get) => ({
 
   resolveRequest: (id, mode, result) => {
     const { request, results } = get();
-    if (request.status !== 'pending' || request.id !== id) return;
+    if (request.status !== 'pending' || request.id !== id) return false;
     set({ results: { ...results, [mode]: result }, shownMode: mode, request: { status: 'idle' } });
+    return true;
   },
 
   failRequest: (id, mode, error) => {

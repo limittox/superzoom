@@ -3,17 +3,19 @@ import { Platform } from 'react-native';
 import { useDerivedValue, useSharedValue } from 'react-native-reanimated';
 import { CommonResolutions, useCameraDevice, usePhotoOutput } from 'react-native-vision-camera';
 
-import { computeMaxZoom } from './crop';
+import { computeMaxZoom, estimatePhotoSize, isFramingClamped, type Size } from './crop';
 import { analyzeLenses, type LensInfo, splitZoom } from './lenses';
 import { type ProcessedCapture, processCapture } from './processCapture';
 
-/** Assumed photo size until the first capture reports the real one (telephoto sensors are often 12 MP). */
-const DEFAULT_PHOTO = { width: 3024, height: 4032 };
-/** Real photo sizes learned from captures, keyed by device and optical cap. */
-const learnedPhotoSize = new Map<string, { width: number; height: number }>();
+/** Real photo sizes learned from captures at the optical cap, keyed by device and cap. */
+const learnedPhotoSize = new Map<string, Size>();
 
 export interface Capture extends ProcessedCapture {
   displayZoom: number;
+  /** The photo was smaller than estimated, so the crop is wider than the preview showed. */
+  framingClamped: boolean;
+  /** Corrected maximum zoom after this capture. */
+  maxDisplayZoom: number;
 }
 
 /**
@@ -34,7 +36,8 @@ export function useZoomCamera(previewLongOverShort: number) {
   );
   const sizeKey = device && lensInfo ? `${device.id}@${lensInfo.opticalCapDevice}` : '';
   const [, rerender] = useState(0);
-  const photoSize = learnedPhotoSize.get(sizeKey) ?? DEFAULT_PHOTO;
+  const supportedPhotoSizes = useMemo(() => device?.getSupportedResolutions('photo') ?? [], [device]);
+  const photoSize = estimatePhotoSize(supportedPhotoSizes, learnedPhotoSize.get(sizeKey));
 
   const maxDisplayZoom = lensInfo
     ? computeMaxZoom(lensInfo.opticalCapDisplay, photoSize.width, photoSize.height, previewLongOverShort)
@@ -60,17 +63,23 @@ export function useZoomCamera(previewLongOverShort: number) {
       const photo = await photoOutput.capturePhoto({ enableShutterSound: true }, {});
       const upright = await photo.toImageAsync();
 
+      const actual = {
+        width: Math.min(upright.width, upright.height),
+        height: Math.max(upright.width, upright.height),
+      };
       // Max zoom depends on the photo size at the optical cap, so only learn from captures taken there.
       if (sizeKey && zoom >= lensInfo.opticalCapDisplay) {
-        learnedPhotoSize.set(sizeKey, {
-          width: Math.min(upright.width, upright.height),
-          height: Math.max(upright.width, upright.height),
-        });
+        learnedPhotoSize.set(sizeKey, actual);
         rerender((n) => n + 1);
       }
 
       const processed = await processCapture(upright, previewLongOverShort, digitalFactor);
-      return { ...processed, displayZoom: zoom };
+      return {
+        ...processed,
+        displayZoom: zoom,
+        framingClamped: isFramingClamped(upright.width, upright.height, previewLongOverShort, digitalFactor),
+        maxDisplayZoom: computeMaxZoom(lensInfo.opticalCapDisplay, actual.width, actual.height, previewLongOverShort),
+      };
     } finally {
       busy.current = false;
     }
