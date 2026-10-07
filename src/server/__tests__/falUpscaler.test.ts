@@ -112,4 +112,12 @@ describe('describeProviderError', () => {
     expect(text).not.toContain('abc:123');
     expect(text).toContain('<redacted>');
   });
+
+  it('never leaves a key prefix when the key straddles the length cut', () => {
+    const key = 'fal-key-0123456789:abcdefghijklmnopqrstuvwxyz';
+    const err = new Error(`${'x'.repeat(480)}${key} trailing`);
+    const text = describeProviderError(err, [key]);
+    expect(text.length).toBeLessThanOrEqual(500);
+    expect(text).not.toContain('fal-key-0123');
+  });
 });

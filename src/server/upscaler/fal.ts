@@ -68,9 +68,10 @@ export function describeProviderError(err: unknown, secrets: string[] = []): str
     e?.message ? String(e.message) : String(err),
     e?.body !== undefined ? JSON.stringify(e.body) : null,
   ].filter(Boolean);
-  let text = parts.join(' | ').slice(0, 500);
+  // Redact before truncating, so a key that straddles the cut can't leave its prefix behind.
+  let text = parts.join(' | ');
   for (const secret of secrets) if (secret) text = text.split(secret).join('<redacted>');
-  return text;
+  return text.slice(0, 500);
 }
 
 export function createFalUpscaler(client: FalLike, onProviderError?: (err: unknown) => void): Upscaler {

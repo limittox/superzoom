@@ -7,11 +7,14 @@
  * The initial zoom is applied when the session is configured and later changes go
  * through once the camera is active, so the cancellation is harmless.
  */
-const BENIGN_PATTERNS = [/OperationCanceledException/, /Camera is not active/];
+const INACTIVE_CANCELLATION = /CameraControl\$OperationCanceledException: Camera is not active/;
+/** Native stack frames for a zoom call; the Android error message includes the stack. */
+const ZOOM_FRAME = /ZoomControl|setZoomRatio|HybridCameraController\$setZoom/;
 
+/** Only CameraX's "not active" cancellation of a zoom call; every other error is reported. */
 export function isBenignCameraError(error: unknown): boolean {
-  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-  return BENIGN_PATTERNS.some((pattern) => pattern.test(message));
+  const message = error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error);
+  return INACTIVE_CANCELLATION.test(message) && ZOOM_FRAME.test(message);
 }
 
 /** `onError` for the camera: drops benign cancellations, reports everything else. */
