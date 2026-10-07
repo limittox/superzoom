@@ -419,15 +419,23 @@ describe('enhancement runner', () => {
     expect(useSession.getState().original?.uri).toBe('orig');
   });
 
-  it('cancels a job whose submission finished after Cancel', async () => {
+  it('lets an upload finish after Cancel, then cancels the job it created', async () => {
     const { api, runner } = setup();
     let accept!: () => void;
-    api.submit.mockImplementationOnce(() => new Promise((resolve) => (accept = () => resolve('job-late'))));
+    let uploadSignal!: AbortSignal;
+    api.submit.mockImplementationOnce((_u, _m, _r, signal) => {
+      uploadSignal = signal;
+      return new Promise((resolve) => (accept = () => resolve('job-late')));
+    });
     const run = runner.start('pro');
     await flush();
     runner.cancel();
+    expect(useSession.getState().request).toEqual({ status: 'idle' });
+    // The service queues the job even if the app hangs up, so the upload isn't aborted...
+    expect(uploadSignal.aborted).toBe(false);
     accept();
     await run;
+    // ...and the job it created is cancelled as soon as its ID is known.
     expect(api.cancel).toHaveBeenCalledWith('job-late');
     expect(api.get).not.toHaveBeenCalled();
   });

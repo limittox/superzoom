@@ -93,10 +93,11 @@ export async function getJob(jobId: string, signal: AbortSignal): Promise<Enhanc
 export async function cancelJob(jobId: string): Promise<void> {
   try {
     const installId = await getInstallId();
-    await fetch(enhanceUrl(undefined, jobPath(jobId)), {
+    const response = await fetch(enhanceUrl(undefined, jobPath(jobId)), {
       method: 'DELETE',
       headers: { [INSTALL_ID_HEADER]: installId },
     });
+    if (__DEV__) console.log(`[enhance] cancel job ${jobId}: HTTP ${response.status}`);
   } catch (err) {
     if (__DEV__) console.warn('[enhance] cancelling the job failed:', err);
   }

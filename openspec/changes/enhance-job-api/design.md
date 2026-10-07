@@ -93,6 +93,7 @@ The fal implementation keeps `MODEL_TABLE`, `planForModel` and `planPasses`. `bu
 - **Network failures while polling:** keep retrying. After 30 s without a successful poll, fail with `network`, keeping the `jobId` in the session. Retry then resumes polling the same job; it submits again only if the job is gone (`job_not_found`), failed or was cancelled.
 - **`done`:** download the result as today. `failed` maps the error code to the existing messages.
 - **`cancel()`:** abort locally, send `DELETE` (fire-and-forget), and drop late results, using the existing request-ID guards in `session.ts`. Leaving the result screen already calls `cancel()`.
+- **Cancel during upload** (found in device testing): the upload request isn't aborted. The service queues the job even if the app hangs up, so aborting would leave it running with no ID to cancel it. Instead, the app waits for the job ID in the background and then cancels the job.
 - *Why 2 s:* about 30 polls for a 60 s job. Cheap in Redis commands and fal status calls, and responsive enough.
 
 ### 8. Logging

@@ -114,16 +114,21 @@ export function createEnhancementRunner({
     });
   }
 
-  /** Submits, resending with the same request ID if the app went to the background and the upload failed. */
+  /**
+   * Submits, resending with the same request ID if the app went to the background and the upload
+   * failed. Cancel doesn't abort the upload: the service would queue the job anyway, and the app
+   * needs its ID to cancel it, so the caller cancels the job once the submission returns.
+   */
   async function submit(upload: LocalImage, mode: EnhanceMode, signal: AbortSignal): Promise<string> {
     const requestId = newRequestId();
+    const uploading = new AbortController().signal;
     for (let attempt = 0; ; attempt++) {
       let wentAway = !foreground.isActive();
       const unsubscribe = foreground.subscribe((active) => {
         if (!active) wentAway = true;
       });
       try {
-        return await api.submit(upload, mode, requestId, signal);
+        return await api.submit(upload, mode, requestId, uploading);
       } catch (err) {
         if (!isNetworkFailure(err) || !wentAway || attempt >= SUBMIT_RETRIES || signal.aborted) throw err;
       } finally {

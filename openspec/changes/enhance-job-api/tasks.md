@@ -27,9 +27,9 @@
 
 ## 6. Device verification
 
-- [ ] 6.1 On the Samsung with the dev server: start a 30x Pro enhancement, switch to another app for about a minute, and come back; verify the result appears without a new upload (the server log shows one job and one `[fal] pro pass 1/2` and `2/2`) and record it in `docs/device-test-matrix.md`
-- [ ] 6.2 Lock the phone during a 100x Creative enhancement, unlock it after 2 minutes, and verify the job finishes (pass 2 starts after unlocking) or reports `timeout`; tap Cancel during another enhancement and leave the result screen during a third, and verify the server logs `cancelled` and starts no further pass; record the results in `docs/device-test-matrix.md`
-- [ ] 6.3 Mark the "Enhancement is cancelled when switching apps" fix done in `docs/follow-ups.md`, and run `npm test`, `npm run lint` and `npm run typecheck`; verify all pass
+- [x] 6.1 On the Samsung with the dev server: start a 30x Pro enhancement, switch to another app for about a minute, and come back; verify the result appears without a new upload (the server log shows one job and one `[fal] pro pass 1/2` and `2/2`) and record it in `docs/device-test-matrix.md`
+- [x] 6.2 Lock the phone during a 100x Creative enhancement, unlock it after 2 minutes, and verify the job finishes (pass 2 starts after unlocking) or reports `timeout`; tap Cancel during another enhancement and leave the result screen during a third, and verify the server logs `cancelled` and starts no further pass; record the results in `docs/device-test-matrix.md`
+- [x] 6.3 Mark the "Enhancement is cancelled when switching apps" fix done in `docs/follow-ups.md`, and run `npm test`, `npm run lint` and `npm run typecheck`; verify all pass
 
 ## Workflow follow-up
 
