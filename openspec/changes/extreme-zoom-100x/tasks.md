@@ -29,7 +29,7 @@
 
 - [x] 5.1 On the Samsung with the dev server: verify presets include 10x/30x/100x, the indicator shows optical → AI ZOOM → AI-RECONSTRUCTED at 5x and ≈13.9x, and the brace hint appears only in the reconstructed tier; record in `docs/device-test-matrix.md`
 - [x] 5.2 Capture at ≈50x of a distinctive target and compare the saved crop with a screenshot of the preview; verify the framing matches within about 3% with preview stabilization on, or remove the stabilization constraint and re-verify; record the outcome in `docs/device-test-matrix.md`
-- [ ] 5.3 Enhance a 100x capture in Enhance, Pro and Creative; verify each returns within the 120 s timeout (about 1.7 MP output in Enhance, 3.5 MP in Pro and Creative), the result is labeled AI-reconstructed, and the dev server logs show two provider requests for Pro and Creative; record timings in `docs/device-test-matrix.md`
+- [x] 5.3 Enhance a 100x capture in Enhance, Pro and Creative; verify each returns within the 120 s timeout (about 1.7 MP output in Enhance, 3.5 MP in Pro and Creative), the result is labeled AI-reconstructed, and the dev server logs show two provider requests for Pro and Creative; record timings in `docs/device-test-matrix.md`
 - [x] 5.4 Run `npm test`, `npm run lint` and `npm run typecheck`; verify all pass
 
 ## Workflow follow-up
