@@ -9,7 +9,7 @@
     "userInterfaceStyle": "dark",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "com.superzoom.app",
+      "bundleIdentifier": "com.limittox.superzoom",
       "supportsTablet": false,
       "infoPlist": {
         "NSCameraUsageDescription": "superzoom uses the camera to take zoomed photos."
@@ -23,9 +23,13 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.superzoom.app",
+      "package": "com.limittox.superzoom",
       "permissions": [
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_IMAGES"
       ]
     },
     "web": {
@@ -57,6 +61,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "9d9e1125-7426-4d4b-87af-e7ba9077a0d2"
+      }
+    },
+    "owner": "limittox"
   }
 }
