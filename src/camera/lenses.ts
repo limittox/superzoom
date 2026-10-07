@@ -20,6 +20,14 @@ export interface Lens {
   deviceZoom: number;
   /** Display factor, snapped to a common value for labels (e.g. 0.5, 3). */
   displayZoom: number;
+  /** mm, when known (Android lens geometry); used to check which lens took a photo. */
+  focalLength?: number;
+}
+
+/** A lens's zoom factor from native lens geometry (see lensGeometry.ts). */
+export interface AndroidLensFactor {
+  factor: number;
+  focalLength: number;
 }
 
 export interface LensInfo {
@@ -51,7 +59,11 @@ function sortedLensTypes(device: LensSource): LensType[] {
     .sort((a, b) => LENS_ORDER.indexOf(a) - LENS_ORDER.indexOf(b));
 }
 
-export function analyzeLenses(device: LensSource, platform: 'ios' | 'android'): LensInfo {
+export function analyzeLenses(
+  device: LensSource,
+  platform: 'ios' | 'android',
+  androidFactors?: readonly AndroidLensFactor[] | null,
+): LensInfo {
   const types = sortedLensTypes(device);
 
   if (platform === 'ios') {
@@ -77,7 +89,12 @@ export function analyzeLenses(device: LensSource, platform: 'ios' | 'android'): 
   }
 
   // Android (CameraX): ratio 1 is the main lens. VisionCamera 5.2.3 reports no switch
-  // factors, so the telephoto lens can't be located and the cap stays at the main lens.
+  // factors, so lens positions come from native lens geometry when available
+  // (android-telephoto-lenses design decision 4); otherwise the cap stays at the main lens.
+  if (androidFactors && androidFactors.length > 0) {
+    const fromFactors = analyzeAndroidFactors(device, androidFactors);
+    if (fromFactors) return fromFactors;
+  }
   const lenses: Lens[] = [];
   if (device.minZoom < 1) {
     lenses.push({ type: 'ultra-wide-angle', deviceZoom: device.minZoom, displayZoom: snapFactor(device.minZoom) });
@@ -105,4 +122,59 @@ export function splitZoom(displayZoom: number, info: LensInfo): ZoomSplit {
   'worklet';
   const deviceZoom = Math.max(info.minDeviceZoom, Math.min(displayZoom * info.neutralZoom, info.opticalCapDevice));
   return { deviceZoom, digitalFactor: Math.max(1, (displayZoom * info.neutralZoom) / deviceZoom) };
+}
+
+const lensTypeForFactor = (factor: number): LensType =>
+  factor < 1 ? 'ultra-wide-angle' : factor === 1 ? 'wide-angle' : 'telephoto';
+
+/**
+ * Lenses at their snapped factors within the camera's zoom range. The optical cap is the
+ * snapped factor of the longest lens, so hardware zoom reaches the phone's own switch point.
+ */
+function analyzeAndroidFactors(device: LensSource, factors: readonly AndroidLensFactor[]): LensInfo | null {
+  const byFactor = new Map<number, AndroidLensFactor>();
+  for (const f of factors) {
+    if (f.factor < device.minZoom * 0.95 || f.factor > device.maxZoom * 1.0001) continue;
+    if (!byFactor.has(f.factor)) byFactor.set(f.factor, f);
+  }
+  if (!byFactor.has(1)) return null;
+
+  const lenses: Lens[] = [...byFactor.values()]
+    .sort((a, b) => a.factor - b.factor)
+    .map((f) => ({
+      type: lensTypeForFactor(f.factor),
+      // An ultra-wide's snapped label (0.6) can sit just below the camera's real minimum.
+      deviceZoom: Math.max(device.minZoom, f.factor),
+      displayZoom: f.factor,
+      focalLength: f.focalLength,
+    }));
+  const cap = Math.max(...lenses.map((l) => l.deviceZoom));
+  return {
+    lenses,
+    neutralZoom: 1,
+    minDeviceZoom: device.minZoom,
+    opticalCapDevice: cap,
+    opticalCapDisplay: snapFactor(cap),
+    minDisplayZoom: snapFactor(device.minZoom),
+  };
+}
+
+/** How close (relative) a pinch must end to a lens's zoom to settle onto it. */
+export const LENS_DETENT = 0.06;
+
+/**
+ * The lens zoom a pinch ending at `displayZoom` should settle on, or null to stay put.
+ * Stopping at 4.96x shows "5x" but stays below the phone's switch to the 5x lens, so
+ * zooms near a lens snap onto it exactly, as the system camera app does.
+ */
+export function lensDetent(displayZoom: number, lensZooms: readonly number[]): number | null {
+  'worklet';
+  let best: number | null = null;
+  for (const lensZoom of lensZooms) {
+    const distance = Math.abs(displayZoom - lensZoom) / lensZoom;
+    if (distance > 0 && distance <= LENS_DETENT && (best === null || distance < Math.abs(displayZoom - best) / best)) {
+      best = lensZoom;
+    }
+  }
+  return best;
 }

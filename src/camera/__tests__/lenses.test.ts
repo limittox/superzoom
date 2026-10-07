@@ -1,4 +1,4 @@
-import { analyzeLenses, type LensSource, snapFactor, splitZoom } from '../lenses';
+import { analyzeLenses, lensDetent, type LensSource, snapFactor, splitZoom } from '../lenses';
 
 const phys = (...types: string[]) => types.map((type) => ({ type }));
 
@@ -115,5 +115,97 @@ describe('splitZoom', () => {
 
   it('goes digital past 1x on Android', () => {
     expect(splitZoom(4, analyzeLenses(pixelNoLogicalTele, 'android'))).toEqual({ deviceZoom: 1, digitalFactor: 4 });
+  });
+});
+
+describe('analyzeLenses (Android with lens factors)', () => {
+  // Samsung "Back Quad Camera" as reported by VisionCamera, plus factors from lens geometry.
+  const quad: LensSource = {
+    minZoom: 0.6,
+    maxZoom: 10,
+    zoomLensSwitchFactors: [],
+    physicalDevices: phys('unknown', 'unknown', 'unknown', 'unknown'),
+  };
+  const factors = [
+    { factor: 0.6, focalLength: 2.2 },
+    { factor: 1, focalLength: 6.3 },
+    { factor: 3, focalLength: 7.9 },
+    { factor: 5, focalLength: 18.6 },
+  ];
+
+  it('offers every lens and caps hardware zoom at the 5x telephoto', () => {
+    const info = analyzeLenses(quad, 'android', factors);
+    expect(info.lenses.map((l) => [l.type, l.displayZoom, l.focalLength])).toEqual([
+      ['ultra-wide-angle', 0.6, 2.2],
+      ['wide-angle', 1, 6.3],
+      ['telephoto', 3, 7.9],
+      ['telephoto', 5, 18.6],
+    ]);
+    expect(info.opticalCapDevice).toBe(5);
+    expect(info.opticalCapDisplay).toBe(5);
+    expect(info.neutralZoom).toBe(1);
+  });
+
+  it('uses hardware zoom up to 5x and goes digital beyond it', () => {
+    const info = analyzeLenses(quad, 'android', factors);
+    expect(splitZoom(5, info)).toEqual({ deviceZoom: 5, digitalFactor: 1 });
+    expect(splitZoom(12, info)).toEqual({ deviceZoom: 5, digitalFactor: 12 / 5 });
+  });
+
+  it('drops a lens beyond the camera maximum zoom', () => {
+    const info = analyzeLenses({ ...quad, maxZoom: 4 }, 'android', factors);
+    expect(info.lenses.map((l) => l.displayZoom)).toEqual([0.6, 1, 3]);
+    expect(info.opticalCapDisplay).toBe(3);
+  });
+
+  it('keeps an ultra-wide whose label sits just below the real minimum', () => {
+    const info = analyzeLenses({ ...quad, minZoom: 0.62 }, 'android', factors);
+    expect(info.lenses[0]).toMatchObject({ displayZoom: 0.6, deviceZoom: 0.62 });
+  });
+
+  it('falls back to the main-lens cap without factors', () => {
+    for (const none of [undefined, null, []]) {
+      const info = analyzeLenses(quad, 'android', none);
+      expect(info.opticalCapDevice).toBe(1);
+      expect(info.lenses.map((l) => l.displayZoom)).toEqual([0.6, 1]);
+    }
+  });
+
+  it('falls back when the factors have no 1x lens', () => {
+    const info = analyzeLenses(quad, 'android', [{ factor: 3, focalLength: 7.9 }]);
+    expect(info.opticalCapDevice).toBe(1);
+  });
+
+  it('ignores factors on iOS', () => {
+    const info = analyzeLenses(iPhone13Pro, 'ios', factors);
+    expect(info.opticalCapDisplay).toBe(3);
+  });
+});
+
+describe('lensDetent', () => {
+  const zooms = [0.6, 1, 3, 5];
+
+  it('settles a pinch ending just below a lens onto it', () => {
+    expect(lensDetent(4.96, zooms)).toBe(5);
+    expect(lensDetent(2.85, zooms)).toBe(3);
+  });
+
+  it('settles a pinch ending just above a lens onto it', () => {
+    expect(lensDetent(5.2, zooms)).toBe(5);
+    expect(lensDetent(1.04, zooms)).toBe(1);
+  });
+
+  it('leaves zooms away from any lens alone', () => {
+    expect(lensDetent(4, zooms)).toBeNull();
+    expect(lensDetent(7, zooms)).toBeNull();
+    expect(lensDetent(4.6, zooms)).toBeNull(); // 8% below 5x
+  });
+
+  it('does nothing when already exactly on a lens', () => {
+    expect(lensDetent(5, zooms)).toBeNull();
+  });
+
+  it('picks the closer lens when two are in range', () => {
+    expect(lensDetent(0.63, [0.6, 0.65])).toBe(0.65);
   });
 });

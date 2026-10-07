@@ -37,6 +37,8 @@ VisionCamera is the standard high-performance camera for React Native, with virt
 - *v5 API facts this design depends on:* `CameraDevice.zoomLensSwitchFactors` (iOS: the device's real `virtualDeviceSwitchOverVideoZoomFactors`; **always empty on Android in 5.2.3**), `physicalDevices[].type`, `minZoom`/`maxZoom`, the `zoom` prop accepting a Reanimated `SharedValue`, `usePhotoOutput({ targetResolution, qualityPrioritization })`, and `Photo.toImageAsync()`, which applies orientation and returns a `react-native-nitro-image` `Image`.
 
 ### 3. Hybrid zoom: hardware zoom up to the optical cap, preview transform beyond it
+
+> **Superseded for Android** by change `android-telephoto-lenses`: on Android, lens zoom factors now come from the `lens-info` native module (sensor size and focal length per lens), so `C` is the longest telephoto lens instead of `1`. The rear camera is chosen by `pickBackCamera()` rather than VisionCamera's default picker.
 Total zoom `Z` (as shown to the user, 1x = main wide lens) is split in two:
 - **Hardware zoom** `H = min(Z, C)`, where `C` is the *optical cap*: the native factor of the longest lens. It's applied through the camera's zoom property, so the virtual device switches lenses by itself.
 - **Digital factor** `D = Z / H`. Above 1, it's applied only to the preview, as a Reanimated `scale` transform on a clipped container around the camera view.
