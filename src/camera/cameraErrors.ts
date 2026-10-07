@@ -6,14 +6,20 @@
  * CameraX cancels those calls with `OperationCanceledException: Camera is not active.`
  * The initial zoom is applied when the session is configured and later changes go
  * through once the camera is active, so the cancellation is harmless.
+ *
+ * While pinching, each zoom update also cancels the previous one still in flight
+ * (`Cancelled due to another zoom value being set.`); the latest value is applied.
  */
 const INACTIVE_CANCELLATION = /CameraControl\$OperationCanceledException: Camera is not active/;
 /** Native stack frames for a zoom call; the Android error message includes the stack. */
 const ZOOM_FRAME = /ZoomControl|setZoomRatio|HybridCameraController\$setZoom/;
+/** Superseded zoom update; the message itself identifies it as a zoom call. */
+const SUPERSEDED_ZOOM = /CameraControl\$OperationCanceledException: Cancelled due to another zoom value being set/;
 
-/** Only CameraX's "not active" cancellation of a zoom call; every other error is reported. */
+/** Only CameraX's cancellations of zoom calls (inactive camera, superseded value); every other error is reported. */
 export function isBenignCameraError(error: unknown): boolean {
   const message = error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error);
+  if (SUPERSEDED_ZOOM.test(message)) return true;
   return INACTIVE_CANCELLATION.test(message) && ZOOM_FRAME.test(message);
 }
 

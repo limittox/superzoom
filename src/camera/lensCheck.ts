@@ -23,7 +23,8 @@ export function describeLensCheck(
   focalLength: number | null,
   info: LensInfo,
 ): LensCheck {
-  const zoom = formatZoom(displayZoom);
+  // Exact zoom, so a pinch that stopped at 4.96x isn't reported as "5x".
+  const zoom = `${Number(displayZoom.toFixed(2))}x`;
   if (focalLength === null) return { level: 'log', message: `[lens-check] ${zoom} → no EXIF focal length` };
 
   const known = info.lenses.filter((l) => l.focalLength !== undefined);

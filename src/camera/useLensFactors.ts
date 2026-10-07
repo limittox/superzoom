@@ -18,6 +18,10 @@ export function loadLensFactors(cameraId: string): Promise<LensFactor[] | null> 
       .then(computeLensFactors)
       .catch(() => null)
       .then((factors) => {
+        if (__DEV__) {
+          const summary = factors?.map((f) => `${f.id}: ${f.rawFactor.toFixed(2)}x → ${f.factor}x (${f.focalLength} mm)`);
+          console.log(`[lens-factors] camera ${cameraId}: ${summary ? summary.join(', ') : 'unavailable (1x cap)'}`);
+        }
         cache.set(cameraId, factors);
         pending.delete(cameraId);
         return factors;
@@ -40,21 +44,25 @@ export function clearLensFactorCache() {
 /**
  * Lens factors for the active Android camera, or null until they load, on iOS, or when
  * unavailable. The camera doesn't wait for them; presets update once they arrive.
+ *
+ * The result is held in React state: with the React Compiler on, a value read straight
+ * from the module-level cache during render is memoized and never refreshes.
  */
 export function useLensFactors(device: { id: string } | undefined): LensFactor[] | null {
   const cameraId = Platform.OS === 'android' ? device?.id : undefined;
-  const [, rerender] = useState(0);
+  const [loaded, setLoaded] = useState<{ cameraId: string; factors: LensFactor[] | null } | null>(null);
 
   useEffect(() => {
-    if (!cameraId || cache.has(cameraId)) return;
+    if (!cameraId) return;
     let mounted = true;
-    loadLensFactors(cameraId).then(() => {
-      if (mounted) rerender((n) => n + 1);
+    // Resolves immediately from the cache after the first load.
+    loadLensFactors(cameraId).then((factors) => {
+      if (mounted) setLoaded({ cameraId, factors });
     });
     return () => {
       mounted = false;
     };
   }, [cameraId]);
 
-  return cameraId ? (cache.get(cameraId) ?? null) : null;
+  return cameraId && loaded?.cameraId === cameraId ? loaded.factors : null;
 }

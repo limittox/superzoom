@@ -55,3 +55,50 @@ describe('loadLensFactors', () => {
     expect(info.lenses.map((l) => l.displayZoom)).toEqual([0.6, 1, 3, 5]);
   });
 });
+
+describe('useLensFactors (rendered)', () => {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const React = require('react') as typeof import('react');
+  const TestRenderer = require('react-test-renderer') as typeof import('react-test-renderer');
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  const { Platform } = jest.requireActual('react-native') as typeof import('react-native');
+
+  const originalOS = Platform.OS;
+  beforeAll(() => Object.defineProperty(Platform, 'OS', { get: () => 'android', configurable: true }));
+  afterAll(() => Object.defineProperty(Platform, 'OS', { get: () => originalOS, configurable: true }));
+
+  function renderHook(device: { id: string } | undefined) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { useLensFactors } = require('../useLensFactors') as typeof import('../useLensFactors');
+    const seen: (unknown[] | null)[] = [];
+    function Probe({ d }: { d: { id: string } | undefined }) {
+      seen.push(useLensFactors(d));
+      return null;
+    }
+    let renderer!: ReturnType<typeof TestRenderer.create>;
+    TestRenderer.act(() => {
+      renderer = TestRenderer.create(React.createElement(Probe, { d: device }));
+    });
+    return { seen, renderer, Probe };
+  }
+
+  it('returns the factors once they load (not stuck on the first null)', async () => {
+    mockedGeometry.mockResolvedValue(geometry);
+    const { seen } = renderHook({ id: '0' });
+    expect(seen[0]).toBeNull();
+    await TestRenderer.act(async () => {
+      await loadLensFactors('0');
+    });
+    const last = seen.at(-1) as { factor: number }[] | null;
+    expect(last?.map((f) => f.factor)).toEqual([0.6, 1, 3, 5]);
+  });
+
+  it('stays null when the native query is unavailable', async () => {
+    mockedGeometry.mockResolvedValue(null);
+    const { seen } = renderHook({ id: '0' });
+    await TestRenderer.act(async () => {
+      await loadLensFactors('0');
+    });
+    expect(seen.at(-1)).toBeNull();
+  });
+});

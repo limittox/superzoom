@@ -69,3 +69,21 @@ Devices: **A** = iPhone with telephoto, **B** = iPhone without telephoto, **C** 
 Development builds log every camera the camera library can see when the camera screen opens (`src/camera/useCameraDiagnostics.ts`; release builds skip it). With the dev server running (`npx expo start`), open the app and look for a line starting with `[camera-diagnostics]` in the dev server output. It lists each camera's ID, type, zoom range, focal length, largest photo size, and the physical lenses behind it, plus which camera the app selected (`"selected": true`).
 
 Example (Samsung with 0.6x/1x/3x/5x lenses, 2026-10-07): `id 0` "Back Quad Camera", virtual, zoom 0.6–10, physical lenses `2`/`5`/`6`/`7` at 2.2/6.3/7.9/18.6 mm. The app should select `id 0`.
+
+## Android telephoto lenses (change `android-telephoto-lenses`)
+
+Device: user's Samsung (Back Quad Camera, lenses 0.6x/1x/3x/5x), Android dev build `377003c5`, 2026-10-07.
+
+| Check | Result |
+|---|---|
+| Rear camera selected | ✅ `id 0` "Back Quad Camera" (`"selected": true`) |
+| Lens factors from `lens-info` | ✅ 0.60 → 0.6x, 1.00 → 1x, 2.74 → 3x, 5.06 → 5x (`[lens-factors]` log) |
+| Presets | ✅ 0.6x, 1x, 3x, 5x shown (after fixing the React Compiler caching bug in `useLensFactors`) |
+| Capture at 3x | ✅ EXIF 7.9 mm → 3x lens |
+| Capture at 5x, distant subject, good light | ✅ EXIF 18.6 mm → 5x lens |
+| Capture at 5x, closer/dimmer scene | ⚠️ EXIF 7.9 mm → the phone used a crop of the 3x lens; flagged by the dev lens check. Expected Samsung behaviour (telephoto minimum focus distance / low light), not an app bug |
+| Zoom indicator optical up to 5x, AI zoom above | ✅ confirmed by the user |
+| Pinch to ~5x | ⚠️ a pinch ending just below 5x (e.g. 4.96x, shown as "5x") stays on the 3x lens. Fixed with lens detents: a pinch ending within 6% of a lens settles exactly on it |
+| 5x lens choice by scene | ✅ far subject in good light → 18.6 mm (5x lens) at 5x, 5.7x and 10x, whether reached by preset or pinch. Close or dim subjects → 7.9 mm (3x lens crop) even at exactly 5.00x hardware zoom: the phone's own choice, flagged by the dev lens check |
+| 10x capture (max preset): 5x hardware zoom + center crop | ✅ EXIF 18.6 mm → 5x lens with 2x digital crop; framing match vs preview ⏳ user to confirm |
+| Forced `null` lens geometry → 1x cap, capture works | ✅ covered by unit tests (`useLensFactors`, `analyzeLenses` fallback); on-device toggle not run |

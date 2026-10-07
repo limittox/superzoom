@@ -20,6 +20,7 @@ export default function ResultScreen() {
   const results = useSession((s) => s.results);
   const shownMode = useSession((s) => s.shownMode);
   const request = useSession((s) => s.request);
+  const devLensNote = useSession((s) => s.devLensNote);
   const { cloudConsent, setCloudConsent, mode: preferredMode, setMode } = useSettings();
   // Saved consent loads asynchronously; nothing below may act on `cloudConsent` until it has.
   const hydrated = useSettingsHydrated();
@@ -221,6 +222,7 @@ export default function ResultScreen() {
         )}
       </View>
 
+      {__DEV__ && devLensNote && <Text style={styles.devNote}>Dev · {devLensNote}</Text>}
       {shownMode === 'creative' && enhanced && (
         <Text style={styles.caveat}>Creative mode may invent detail that doesn&apos;t match reality.</Text>
       )}
@@ -249,6 +251,7 @@ const styles = StyleSheet.create({
   label: { backgroundColor: colors.surface, borderRadius: 999, paddingHorizontal: spacing.md, paddingVertical: spacing.xs },
   labelText: { color: colors.beyondOptical, fontSize: 13, fontWeight: '700' },
   viewer: { flex: 1 },
+  devNote: { color: colors.textSecondary, fontSize: 12, textAlign: 'center', paddingHorizontal: spacing.lg },
   sideLabels: {
     position: 'absolute',
     top: spacing.sm,

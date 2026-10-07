@@ -31,6 +31,8 @@ interface SessionState {
   saved: { original: boolean; enhanced: Partial<Record<EnhanceMode, boolean>> };
   /** Display zoom when the photo was taken, restored on return to the camera. */
   captureZoom: number;
+  /** Development builds only: which lens took the photo (EXIF lens check). */
+  devLensNote: string | null;
 
   startSession(original: LocalImage, upload: LocalImage, captureZoom: number): void;
   /** Returns a request ID; results for any other ID are ignored. */
@@ -53,6 +55,7 @@ const empty = {
   shownMode: null,
   request: { status: 'idle' } as RequestState,
   saved: { original: false, enhanced: {} },
+  devLensNote: null as string | null,
 };
 
 export const useSession = create<SessionState>()((set, get) => ({

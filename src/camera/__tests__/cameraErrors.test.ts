@@ -16,6 +16,13 @@ describe('camera errors', () => {
     expect(isBenignCameraError(inactiveZoom)).toBe(true);
   });
 
+  it('treats a zoom value superseded by a newer one as benign', () => {
+    const superseded = new Error(
+      'androidx.camera.core.CameraControl$OperationCanceledException: Cancelled due to another zoom value being set.\n',
+    );
+    expect(isBenignCameraError(superseded)).toBe(true);
+  });
+
   it('reports other camera errors', () => {
     expect(isBenignCameraError(new Error('`zoom` is out of range!'))).toBe(false);
     expect(isBenignCameraError(new Error('Camera device was disconnected'))).toBe(false);

@@ -1,4 +1,4 @@
-import { analyzeLenses, type LensSource, snapFactor, splitZoom } from '../lenses';
+import { analyzeLenses, lensDetent, type LensSource, snapFactor, splitZoom } from '../lenses';
 
 const phys = (...types: string[]) => types.map((type) => ({ type }));
 
@@ -179,5 +179,33 @@ describe('analyzeLenses (Android with lens factors)', () => {
   it('ignores factors on iOS', () => {
     const info = analyzeLenses(iPhone13Pro, 'ios', factors);
     expect(info.opticalCapDisplay).toBe(3);
+  });
+});
+
+describe('lensDetent', () => {
+  const zooms = [0.6, 1, 3, 5];
+
+  it('settles a pinch ending just below a lens onto it', () => {
+    expect(lensDetent(4.96, zooms)).toBe(5);
+    expect(lensDetent(2.85, zooms)).toBe(3);
+  });
+
+  it('settles a pinch ending just above a lens onto it', () => {
+    expect(lensDetent(5.2, zooms)).toBe(5);
+    expect(lensDetent(1.04, zooms)).toBe(1);
+  });
+
+  it('leaves zooms away from any lens alone', () => {
+    expect(lensDetent(4, zooms)).toBeNull();
+    expect(lensDetent(7, zooms)).toBeNull();
+    expect(lensDetent(4.6, zooms)).toBeNull(); // 8% below 5x
+  });
+
+  it('does nothing when already exactly on a lens', () => {
+    expect(lensDetent(5, zooms)).toBeNull();
+  });
+
+  it('picks the closer lens when two are in range', () => {
+    expect(lensDetent(0.63, [0.6, 0.65])).toBe(0.65);
   });
 });

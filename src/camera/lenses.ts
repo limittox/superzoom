@@ -158,3 +158,23 @@ function analyzeAndroidFactors(device: LensSource, factors: readonly AndroidLens
     minDisplayZoom: snapFactor(device.minZoom),
   };
 }
+
+/** How close (relative) a pinch must end to a lens's zoom to settle onto it. */
+export const LENS_DETENT = 0.06;
+
+/**
+ * The lens zoom a pinch ending at `displayZoom` should settle on, or null to stay put.
+ * Stopping at 4.96x shows "5x" but stays below the phone's switch to the 5x lens, so
+ * zooms near a lens snap onto it exactly, as the system camera app does.
+ */
+export function lensDetent(displayZoom: number, lensZooms: readonly number[]): number | null {
+  'worklet';
+  let best: number | null = null;
+  for (const lensZoom of lensZooms) {
+    const distance = Math.abs(displayZoom - lensZoom) / lensZoom;
+    if (distance > 0 && distance <= LENS_DETENT && (best === null || distance < Math.abs(displayZoom - best) / best)) {
+      best = lensZoom;
+    }
+  }
+  return best;
+}

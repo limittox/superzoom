@@ -14,6 +14,7 @@ import { Camera, type CameraRef, useCameraPermission } from 'react-native-vision
 import { scheduleOnRN } from 'react-native-worklets';
 
 import { handleCameraError } from '@/camera/cameraErrors';
+import { lensDetent } from '@/camera/lenses';
 import { useCameraDiagnostics } from '@/camera/useCameraDiagnostics';
 import { useZoomCamera } from '@/camera/useZoomCamera';
 import { ModePicker } from '@/components/ModePicker';
@@ -107,12 +108,18 @@ function ZoomCamera() {
   );
 
   const pinchStart = useSharedValue(1);
+  const lensZooms = lensInfo ? lensInfo.lenses.map((l) => l.displayZoom) : [];
   const pinch = Gesture.Pinch()
     .onStart(() => {
       pinchStart.set(displayZoom.get());
     })
     .onUpdate((e) => {
       displayZoom.set(Math.min(maxDisplayZoom, Math.max(minDisplayZoom, pinchStart.get() * e.scale)));
+    })
+    .onEnd(() => {
+      // Settle onto a nearby lens so the phone actually switches to it (4.96x would stay on the 3x lens).
+      const detent = lensDetent(displayZoom.get(), lensZooms);
+      if (detent !== null) displayZoom.set(withTiming(detent, { duration: 150 }));
     });
 
   const tap = Gesture.Tap().onEnd((e, success) => {
@@ -143,6 +150,7 @@ function ZoomCamera() {
       if (!result) return;
       const proceed = () => {
         useSession.getState().startSession(result.original, result.upload, result.displayZoom);
+        if (__DEV__) useSession.setState({ devLensNote: result.devLensNote ?? null });
         router.push('/result');
       };
       if (result.framingClamped) {
