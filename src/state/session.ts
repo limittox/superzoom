@@ -14,10 +14,15 @@ export interface EnhanceFailure {
   retryAt?: string;
 }
 
+/** Where a pending enhancement is: uploading, waiting in the provider's queue, enhancing, or on its second pass. */
+export type EnhancePhase = 'submitting' | 'queued' | 'processing' | 'finishing';
+
 export type RequestState =
   | { status: 'idle' }
-  | { status: 'pending'; id: number; mode: EnhanceMode }
-  | { status: 'error'; mode: EnhanceMode; error: EnhanceFailure };
+  /** `jobId` is set once the service has accepted the job. */
+  | { status: 'pending'; id: number; mode: EnhanceMode; phase: EnhancePhase; jobId?: string }
+  /** `jobId` is kept when the job may still be running (e.g. a network failure), so Retry can resume it. */
+  | { status: 'error'; mode: EnhanceMode; error: EnhanceFailure; jobId?: string };
 
 interface SessionState {
   /** Full-resolution crop; used for the comparison and for saving. */
@@ -37,11 +42,13 @@ interface SessionState {
   aiReconstructed: boolean;
 
   startSession(original: LocalImage, upload: LocalImage, captureZoom: number, aiReconstructed?: boolean): void;
-  /** Returns a request ID; results for any other ID are ignored. */
-  beginRequest(mode: EnhanceMode): number;
+  /** Returns a request ID; results for any other ID are ignored. Pass `jobId` to resume an existing job. */
+  beginRequest(mode: EnhanceMode, jobId?: string): number;
+  /** Updates a pending request's phase or job ID; ignored for a cancelled or superseded request. */
+  updateRequest(id: number, patch: { phase?: EnhancePhase; jobId?: string }): void;
   /** Returns false (and stores nothing) if the request was cancelled or superseded. */
   resolveRequest(id: number, mode: EnhanceMode, result: LocalImage): boolean;
-  failRequest(id: number, mode: EnhanceMode, error: EnhanceFailure): void;
+  failRequest(id: number, mode: EnhanceMode, error: EnhanceFailure, jobId?: string): void;
   cancelRequest(): void;
   showMode(mode: EnhanceMode): void;
   markSaved(what: { original?: boolean; enhancedMode?: EnhanceMode }): void;
@@ -68,10 +75,16 @@ export const useSession = create<SessionState>()((set, get) => ({
   startSession: (original, upload, captureZoom, aiReconstructed = false) =>
     set({ ...empty, original, upload, captureZoom, aiReconstructed }),
 
-  beginRequest: (mode) => {
+  beginRequest: (mode, jobId) => {
     const id = nextRequestId++;
-    set({ request: { status: 'pending', id, mode } });
+    set({ request: { status: 'pending', id, mode, phase: jobId ? 'queued' : 'submitting', ...(jobId ? { jobId } : {}) } });
     return id;
+  },
+
+  updateRequest: (id, patch) => {
+    const { request } = get();
+    if (request.status !== 'pending' || request.id !== id) return;
+    set({ request: { ...request, ...patch } });
   },
 
   resolveRequest: (id, mode, result) => {
@@ -81,10 +94,10 @@ export const useSession = create<SessionState>()((set, get) => ({
     return true;
   },
 
-  failRequest: (id, mode, error) => {
+  failRequest: (id, mode, error, jobId) => {
     const { request } = get();
     if (request.status !== 'pending' || request.id !== id) return;
-    set({ request: { status: 'error', mode, error } });
+    set({ request: { status: 'error', mode, error, ...(jobId ? { jobId } : {}) } });
   },
 
   cancelRequest: () => {

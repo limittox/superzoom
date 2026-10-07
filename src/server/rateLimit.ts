@@ -1,4 +1,4 @@
-import { Redis } from '@upstash/redis';
+import type { Redis } from '@upstash/redis';
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_DAILY_LIMIT = 50;
@@ -57,9 +57,4 @@ export function upstashStore(redis: Redis): SortedSetStore {
 export function parseDailyLimit(raw: string | undefined): number {
   const value = Number(raw);
   return Number.isInteger(value) && value > 0 ? value : DEFAULT_DAILY_LIMIT;
-}
-
-export function createDefaultRateLimiter(env: Record<string, string | undefined>): RateLimiter {
-  const redis = new Redis({ url: env.UPSTASH_REDIS_REST_URL!, token: env.UPSTASH_REDIS_REST_TOKEN! });
-  return createRateLimiter(upstashStore(redis), parseDailyLimit(env.DAILY_LIMIT));
 }

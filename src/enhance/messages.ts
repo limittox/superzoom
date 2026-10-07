@@ -22,10 +22,17 @@ const MESSAGES: Record<FailureCode, string> = {
   image_too_large: 'This crop is too large to enhance.',
   missing_install_id: 'Something went wrong identifying this device. Restart the app and try again.',
   bad_request: 'Something went wrong sending the photo. Please try again.',
+  job_not_found: 'This enhancement is no longer available. Please try again.',
 };
 
 /** Error codes that a retry might fix. */
-export const RETRYABLE: ReadonlySet<FailureCode> = new Set(['network', 'timeout', 'provider_error', 'cancelled']);
+export const RETRYABLE: ReadonlySet<FailureCode> = new Set([
+  'network',
+  'timeout',
+  'provider_error',
+  'cancelled',
+  'job_not_found',
+]);
 
 export function failureMessage(failure: Pick<EnhanceFailure, 'code' | 'retryAt'>, locale?: string): string {
   const base = MESSAGES[failure.code];

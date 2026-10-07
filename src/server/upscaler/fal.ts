@@ -4,7 +4,8 @@ import { type EnhanceMode, LIMITS } from '@/shared/enhance';
 import { chooseUpscaleFactor, type UpscalePlan } from '@/shared/upscale';
 
 import { ApiError, providerError, timeoutError } from '../errors';
-import type { UpscaleRequest, UpscaleResult, Upscaler } from './types';
+import type { JobRecord } from '../jobStore';
+import type { Upscaler } from './types';
 
 /** Uploaded inputs and generated outputs expire on fal's CDN after this long. */
 const OBJECT_EXPIRY = '1h' as const;
@@ -98,18 +99,14 @@ export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
   },
 };
 
-type FalLike = Pick<FalClient, 'storage' | 'subscribe' | 'queue'>;
+type FalLike = Pick<FalClient, 'storage' | 'queue'>;
 
 interface FalImageOutput {
   image?: { url?: string; width?: number; height?: number };
 }
 
-function rejectOnAbort(signal: AbortSignal): Promise<never> {
-  return new Promise((_, reject) => {
-    if (signal.aborted) reject(timeoutError());
-    signal.addEventListener('abort', () => reject(timeoutError()), { once: true });
-  });
-}
+/** fal drops a queued pass that hasn't started within this many seconds, even if nobody polls. */
+const PASS_START_TIMEOUT_S = LIMITS.providerTimeoutMs / 1000;
 
 /** Short, log-safe description of a fal client error (status, message, response body). */
 export function describeProviderError(err: unknown, secrets: string[] = []): string {
@@ -125,68 +122,119 @@ export function describeProviderError(err: unknown, secrets: string[] = []): str
   return text.slice(0, 500);
 }
 
+/**
+ * fal implementation of the job seam (enhance-job-api design decisions 1 and 6). `start` uploads
+ * and queues pass 1; each `advance` checks the active pass and queues the next one on its output.
+ */
 export function createFalUpscaler(client: FalLike, onProviderError?: (err: unknown) => void): Upscaler {
+  async function submitPass(mode: EnhanceMode, sourceUrl: string, passes: number[], index: number) {
+    const spec = MODEL_TABLE[mode];
+    if (process.env.NODE_ENV !== 'production') {
+      console.info(`[fal] ${mode} pass ${index + 1}/${passes.length}: ${spec.endpoint} at ${passes[index].toFixed(2)}x`);
+    }
+    const queued = await client.queue.submit(spec.endpoint, {
+      input: spec.buildInput(sourceUrl, passes[index]),
+      startTimeout: PASS_START_TIMEOUT_S,
+      storageSettings: { expiresIn: OBJECT_EXPIRY },
+    });
+    return queued.request_id;
+  }
+
+  async function cancelPass(job: JobRecord) {
+    if ((job.status !== 'queued' && job.status !== 'processing') || !job.providerRequestId) return;
+    try {
+      await client.queue.cancel(MODEL_TABLE[job.mode].endpoint, { requestId: job.providerRequestId });
+    } catch {
+      // Best effort: a pass that already started or finished can't be cancelled.
+    }
+  }
+
+  const failed = (job: JobRecord, error: ApiError): JobRecord => ({
+    ...job,
+    status: 'failed',
+    error: { code: error.code, message: error.message },
+  });
+
   return {
-    async upscale({ image, width, height, mode, signal }: UpscaleRequest): Promise<UpscaleResult> {
+    async start({ image, width, height, mode }, now = Date.now()) {
       const spec = MODEL_TABLE[mode];
+      // Rejects inputs the model can't take before anything is uploaded or billed.
       const plan = planForModel(spec, width, height);
-      const aborted = rejectOnAbort(signal);
-      // Keep an unobserved rejection from surfacing when the request finishes first.
-      aborted.catch(() => {});
-
-      // fal's abortSignal only stops this client waiting; the job stays queued on fal and keeps
-      // billing. On abort (app cancel, disconnect or timeout), cancel the job still in the queue.
-      let queuedRequestId: string | undefined;
-      const cancelQueuedJob = () => {
-        if (!queuedRequestId) return;
-        client.queue?.cancel(spec.endpoint, { requestId: queuedRequestId }).catch(() => {});
-      };
-      signal.addEventListener('abort', cancelQueuedJob, { once: true });
-
+      const passes = planPasses(plan.factor, spec.maxFactorPerPass);
       try {
-        const imageUrl = await Promise.race([
-          client.storage.upload(image, { lifecycle: { expiresIn: OBJECT_EXPIRY } }),
-          aborted,
-        ]);
-        // Models capped below the planned factor get a second pass on the first pass's output.
-        // Both passes share the request's abort signal, so the overall timeout covers them together.
-        let url = imageUrl;
-        let output: FalImageOutput = {};
-        const passes = planPasses(plan.factor, spec.maxFactorPerPass);
-        for (const [i, factor] of passes.entries()) {
-          if (process.env.NODE_ENV !== 'production') {
-            console.info(`[fal] ${mode} pass ${i + 1}/${passes.length}: ${spec.endpoint} at ${factor.toFixed(2)}x`);
-          }
-          const result = await Promise.race([
-            client.subscribe(spec.endpoint, {
-              input: spec.buildInput(url, factor),
-              abortSignal: signal,
-              storageSettings: { expiresIn: OBJECT_EXPIRY },
-              onEnqueue: (requestId) => {
-                queuedRequestId = requestId;
-              },
-            }),
-            aborted,
-          ]);
-          queuedRequestId = undefined;
-          output = result.data as FalImageOutput;
-          if (!output.image?.url) throw providerError();
-          url = output.image.url;
-        }
+        const sourceUrl = await client.storage.upload(image, { lifecycle: { expiresIn: OBJECT_EXPIRY } });
+        const providerRequestId = await submitPass(mode, sourceUrl, passes, 0);
         return {
-          url,
-          width: output.image?.width ?? plan.outputWidth,
-          height: output.image?.height ?? plan.outputHeight,
+          passes,
+          outputWidth: plan.outputWidth,
+          outputHeight: plan.outputHeight,
+          sourceUrl,
+          providerRequestId,
+          passQueuedAt: now,
         };
       } catch (err) {
-        if (err instanceof ApiError) throw err;
-        if (signal.aborted) throw timeoutError();
         onProviderError?.(err);
         throw providerError();
-      } finally {
-        signal.removeEventListener('abort', cancelQueuedJob);
       }
     },
+
+    async advance(job, now = Date.now()) {
+      if ((job.status !== 'queued' && job.status !== 'processing') || !job.providerRequestId) return job;
+      const { endpoint } = MODEL_TABLE[job.mode];
+      const requestId = job.providerRequestId;
+
+      let status;
+      try {
+        status = await client.queue.status(endpoint, { requestId });
+      } catch (err) {
+        // A failed status check says nothing about the job; try again on the next poll.
+        onProviderError?.(err);
+        status = null;
+      }
+
+      if (status?.status !== 'COMPLETED') {
+        if (now - (job.passQueuedAt ?? job.createdAt) > LIMITS.providerTimeoutMs) {
+          await cancelPass(job);
+          return failed(job, timeoutError());
+        }
+        if (!status) return job;
+        // Pass 1 waiting in fal's queue is "queued"; anything later is "processing".
+        return { ...job, status: status.status === 'IN_QUEUE' && job.passIndex === 0 ? 'queued' : 'processing' };
+      }
+
+      let output: FalImageOutput;
+      try {
+        output = (await client.queue.result(endpoint, { requestId })).data as FalImageOutput;
+      } catch (err) {
+        onProviderError?.(err);
+        return failed(job, providerError());
+      }
+      const url = output.image?.url;
+      if (!url) return failed(job, providerError());
+
+      const next = job.passIndex + 1;
+      if (next < job.passes.length) {
+        try {
+          const providerRequestId = await submitPass(job.mode, url, job.passes, next);
+          return { ...job, status: 'processing', passIndex: next, providerRequestId, passQueuedAt: now, sourceUrl: url };
+        } catch (err) {
+          onProviderError?.(err);
+          return failed(job, providerError());
+        }
+      }
+      return {
+        ...job,
+        status: 'done',
+        result: {
+          url,
+          width: output.image?.width ?? job.outputWidth,
+          height: output.image?.height ?? job.outputHeight,
+          mode: job.mode,
+        },
+      };
+    },
+
+    cancel: cancelPass,
   };
 }
 

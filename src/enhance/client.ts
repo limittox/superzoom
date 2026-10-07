@@ -2,12 +2,14 @@ import { File, Paths } from 'expo-file-system';
 
 import {
   ENHANCE_PATH,
+  type EnhanceJobCreated,
+  type EnhanceJobStatus,
   type EnhanceMode,
-  type EnhanceResponse,
   type EnhanceSuccess,
   FORM_FIELDS,
   INSTALL_ID_HEADER,
   isEnhanceError,
+  jobPath,
 } from '@/shared/enhance';
 import type { EnhanceFailure, LocalImage } from '@/state/session';
 import { getInstallId } from '@/state/settings';
@@ -21,48 +23,83 @@ export class EnhanceRequestError extends Error {
   }
 }
 
-const fail = (code: EnhanceFailure['code'], retryAt?: string) =>
+export const fail = (code: EnhanceFailure['code'], retryAt?: string) =>
   new EnhanceRequestError({ code, message: failureMessage({ code, retryAt }), ...(retryAt ? { retryAt } : {}) });
 
 /** In development, relative URLs go to the dev server; release builds set EXPO_PUBLIC_API_URL. */
-export function enhanceUrl(base = process.env.EXPO_PUBLIC_API_URL): string {
-  return base ? `${base.replace(/\/+$/, '')}${ENHANCE_PATH}` : ENHANCE_PATH;
+export function enhanceUrl(base = process.env.EXPO_PUBLIC_API_URL, path: string = ENHANCE_PATH): string {
+  return base ? `${base.replace(/\/+$/, '')}${path}` : path;
 }
 
-export async function requestEnhancement(
+/** Sends a request and reads its JSON, mapping transport failures and error bodies to `EnhanceRequestError`. */
+async function callApi<T>(url: string, init: RequestInit, signal?: AbortSignal): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(url, { ...init, signal });
+  } catch (err) {
+    if (__DEV__ && !signal?.aborted) console.warn(`[enhance] request to ${url} failed:`, err);
+    throw fail(signal?.aborted ? 'cancelled' : 'network');
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw fail(signal?.aborted ? 'cancelled' : response.ok ? 'provider_error' : 'network');
+  }
+  if (isEnhanceError(body)) throw fail(body.error.code, body.error.retryAt);
+  if (!response.ok) throw fail('provider_error');
+  return body as T;
+}
+
+/**
+ * Submits the upload copy and returns the job's ID (specs/image-enhancement: Enhancement request).
+ * Resubmitting with the same `requestId` returns the same job, so a submit whose response was
+ * lost can safely be sent again.
+ */
+export async function submitJob(
   upload: LocalImage,
   mode: EnhanceMode,
+  requestId: string,
   signal: AbortSignal,
-): Promise<EnhanceSuccess> {
+): Promise<string> {
   const installId = await getInstallId();
   const form = new FormData();
   // Expo's fetch (the global fetch in SDK 57) rejects React Native's { uri, name, type }
   // descriptors; it takes Blob-like parts, which expo-file-system's File implements.
   form.append(FORM_FIELDS.image, new File(upload.uri), 'crop.jpg');
   form.append(FORM_FIELDS.mode, mode);
+  form.append(FORM_FIELDS.requestId, requestId);
+  const body = await callApi<EnhanceJobCreated>(
+    enhanceUrl(),
+    { method: 'POST', body: form, headers: { [INSTALL_ID_HEADER]: installId } },
+    signal,
+  );
+  if (!body.jobId) throw fail('provider_error');
+  return body.jobId;
+}
 
-  let response: Response;
+/** Reads a job's status; the service moves the job along as it answers. */
+export async function getJob(jobId: string, signal: AbortSignal): Promise<EnhanceJobStatus> {
+  const installId = await getInstallId();
+  return callApi<EnhanceJobStatus>(
+    enhanceUrl(undefined, jobPath(jobId)),
+    { method: 'GET', headers: { [INSTALL_ID_HEADER]: installId } },
+    signal,
+  );
+}
+
+/** Asks the service to cancel a job. Best effort: the app has already stopped waiting, so this never throws. */
+export async function cancelJob(jobId: string): Promise<void> {
   try {
-    response = await fetch(enhanceUrl(), {
-      method: 'POST',
-      body: form,
+    const installId = await getInstallId();
+    await fetch(enhanceUrl(undefined, jobPath(jobId)), {
+      method: 'DELETE',
       headers: { [INSTALL_ID_HEADER]: installId },
-      signal,
     });
   } catch (err) {
-    if (__DEV__ && !signal.aborted) console.warn(`[enhance] request to ${enhanceUrl()} failed:`, err);
-    throw fail(signal.aborted ? 'cancelled' : 'network');
+    if (__DEV__) console.warn('[enhance] cancelling the job failed:', err);
   }
-
-  let body: EnhanceResponse;
-  try {
-    body = (await response.json()) as EnhanceResponse;
-  } catch {
-    throw fail(signal.aborted ? 'cancelled' : response.ok ? 'provider_error' : 'network');
-  }
-  if (isEnhanceError(body)) throw fail(body.error.code, body.error.retryAt);
-  if (!response.ok || !body.url) throw fail('provider_error');
-  return body;
 }
 
 /** Deletes a cached file, ignoring files that are already gone. */
@@ -93,14 +130,4 @@ export async function downloadResult(result: EnhanceSuccess, signal: AbortSignal
     if (err instanceof EnhanceRequestError) throw err;
     throw fail(signal.aborted ? 'cancelled' : 'network');
   }
-}
-
-/** Full enhancement flow for the session store: request, download, and stale-response guarding. */
-export async function runEnhancement(
-  upload: LocalImage,
-  mode: EnhanceMode,
-  signal: AbortSignal,
-): Promise<LocalImage> {
-  const result = await requestEnhancement(upload, mode, signal);
-  return downloadResult(result, signal);
 }

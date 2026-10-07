@@ -3,112 +3,148 @@
  */
 import { ENHANCE_PATH, INSTALL_ID_HEADER, LIMITS } from '@/shared/enhance';
 
-import { createEnhanceHandler, type LogEvent, readBodyWithLimit } from '../enhanceHandler';
+import { createEnhanceHandlers, type LogEvent, readBodyWithLimit } from '../enhanceHandler';
+import { memoryJobStore } from '../jobStore';
+import { memoryStore } from '../memoryStore';
 import { createRateLimiter } from '../rateLimit';
 import { makeGif, makeJpeg } from '../testing/fixtures';
-import { memoryStore } from '../memoryStore';
 import { createFalUpscaler } from '../upscaler/fal';
 
 const INSTALL_ID = '3b241101-e2bb-4255-8caf-4136c566a962';
+const OTHER_INSTALL = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+const REQUEST_ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
 
+/** A fake fal client whose passes finish on the first status check unless told otherwise. */
 function fakeFal() {
+  let submitted = 0;
   return {
     storage: { upload: jest.fn().mockResolvedValue('https://fal.media/in.jpg'), transformInput: jest.fn() },
-    subscribe: jest.fn().mockResolvedValue({ data: { image: { url: 'https://fal.media/out.jpg' } }, requestId: 'r' }),
-    queue: { cancel: jest.fn().mockResolvedValue(undefined) },
+    queue: {
+      submit: jest.fn(async () => ({ request_id: `fal-${++submitted}`, status: 'IN_QUEUE' })),
+      status: jest.fn(async (): Promise<{ status: string }> => ({ status: 'COMPLETED' })),
+      result: jest.fn(
+        async (_endpoint: string, { requestId }: { requestId: string }): Promise<{ data: unknown; requestId: string }> => ({
+          data: { image: { url: `https://fal.media/${requestId}.jpg` } },
+          requestId,
+        }),
+      ),
+      cancel: jest.fn().mockResolvedValue(undefined),
+    },
   };
 }
 
-function setup({ limit = 50, timeoutMs = 1000 } = {}) {
+function setup({ limit = 50 } = {}) {
   const fal = fakeFal();
   const logs: LogEvent[] = [];
+  const clock = { now: 1_000_000 };
   const limiter = createRateLimiter(memoryStore(), limit);
-  const handler = createEnhanceHandler({
+  const jobs = memoryJobStore(() => clock.now);
+  let ids = 0;
+  const handlers = createEnhanceHandlers({
     getUpscaler: () => createFalUpscaler(fal as never),
     getRateLimiter: () => limiter,
-    timeoutMs,
+    getJobStore: () => jobs,
     log: (e) => logs.push(e),
+    now: () => clock.now,
+    newId: () => `job-${++ids}`,
+    cancelLockWaitMs: 0,
   });
-  return { fal, logs, handler };
+  return { fal, logs, handlers, jobs, clock };
 }
 
 function makeRequest({
   image = makeJpeg(1000, 1000) as Uint8Array | null,
   mode,
+  requestId = REQUEST_ID as string | null,
   installId = INSTALL_ID as string | null,
-  signal,
-}: { image?: Uint8Array | null; mode?: string; installId?: string | null; signal?: AbortSignal } = {}) {
+}: { image?: Uint8Array | null; mode?: string; requestId?: string | null; installId?: string | null } = {}) {
   const form = new FormData();
   if (image) form.append('image', new Blob([image as BlobPart], { type: 'image/jpeg' }), 'crop.jpg');
   if (mode !== undefined) form.append('mode', mode);
+  if (requestId) form.append('requestId', requestId);
   const headers: Record<string, string> = {};
   if (installId) headers[INSTALL_ID_HEADER] = installId;
-  return new Request(`http://localhost${ENHANCE_PATH}`, { method: 'POST', body: form, headers, signal });
+  return new Request(`http://localhost${ENHANCE_PATH}`, { method: 'POST', body: form, headers });
 }
+
+const jobRequest = (jobId: string, method: 'GET' | 'DELETE' = 'GET', installId = INSTALL_ID) =>
+  new Request(`http://localhost${ENHANCE_PATH}/${jobId}`, { method, headers: { [INSTALL_ID_HEADER]: installId } });
 
 async function call(handler: (r: Request) => Promise<Response>, request: Request) {
   const response = await handler(request);
   return { status: response.status, headers: response.headers, body: await response.json() };
 }
 
-describe('POST /api/enhance', () => {
-  it('enhances a valid JPEG and returns url, size and mode', async () => {
-    const { handler, fal } = setup();
-    const res = await call(handler, makeRequest({ mode: 'enhance' }));
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ url: 'https://fal.media/out.jpg', width: 4000, height: 4000, mode: 'enhance' });
-    expect(fal.subscribe.mock.calls[0][0]).toBe('fal-ai/seedvr/upscale/image');
+/** Submits a job and returns its ID. */
+async function submitted(handlers: ReturnType<typeof setup>['handlers'], options: Parameters<typeof makeRequest>[0] = {}) {
+  const res = await call(handlers.submit, makeRequest(options));
+  expect(res.status).toBe(202);
+  return res.body.jobId as string;
+}
+
+const poll = async (handlers: ReturnType<typeof setup>['handlers'], jobId: string, installId = INSTALL_ID) =>
+  call((r) => handlers.status(r, jobId), jobRequest(jobId, 'GET', installId));
+
+describe('POST /api/enhance (submit)', () => {
+  it('queues pass 1 and returns a job ID without waiting for the result', async () => {
+    const { handlers, fal, jobs } = setup();
+    const res = await call(handlers.submit, makeRequest({ mode: 'enhance' }));
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ jobId: 'job-1' });
+    expect(fal.queue.submit).toHaveBeenCalledTimes(1);
+    expect((fal.queue.submit.mock.calls[0] as unknown as [string])[0]).toBe('fal-ai/seedvr/upscale/image');
+    expect(fal.queue.status).not.toHaveBeenCalled();
+    expect(await jobs.get('job-1')).toMatchObject({ status: 'queued', installId: INSTALL_ID, providerRequestId: 'fal-1' });
   });
 
-  it('upscales a tiny 100x crop (enlarged to 128x275) in one request in Enhance mode, within 1920x1080', async () => {
-    const { handler, fal } = setup();
-    const res = await call(handler, makeRequest({ image: makeJpeg(128, 275), mode: 'enhance' }));
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ width: 893, height: 1920, mode: 'enhance' });
-    expect(fal.subscribe).toHaveBeenCalledTimes(1);
-    expect(fal.subscribe.mock.calls[0][1].input.upscale_factor).toBeCloseTo(1920 / 275, 6);
+  it('defaults to enhance mode when mode is omitted, and routes pro mode to Topaz', async () => {
+    const { handlers, fal, jobs } = setup();
+    await submitted(handlers);
+    await submitted(handlers, { mode: 'pro', requestId: '1f8fad5b-d9cb-469f-a165-70867728950e' });
+    expect((await jobs.get('job-1'))!.mode).toBe('enhance');
+    expect((fal.queue.submit.mock.calls[1] as unknown as [string])[0]).toBe('fal-ai/topaz/upscale/image');
   });
 
-  it('upscales a tiny 100x crop in two requests in Pro mode', async () => {
-    const { handler, fal } = setup();
-    const res = await call(handler, makeRequest({ image: makeJpeg(128, 275), mode: 'pro' }));
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ width: 1280, height: 2750, mode: 'pro' });
-    expect(fal.subscribe.mock.calls.map((c) => c[1].input.upscale_factor)).toEqual([4, 2.5]);
+  it('returns the same job for a resubmission, running and charging it once', async () => {
+    const { handlers, fal } = setup({ limit: 1 });
+    const first = await call(handlers.submit, makeRequest());
+    const again = await call(handlers.submit, makeRequest());
+    expect(again).toMatchObject({ status: 202, body: { jobId: first.body.jobId } });
+    expect(fal.storage.upload).toHaveBeenCalledTimes(1);
+    expect(fal.queue.submit).toHaveBeenCalledTimes(1);
+    // The limit of 1 was used once: a new request ID is now rate limited.
+    const other = await call(handlers.submit, makeRequest({ requestId: '2f8fad5b-d9cb-469f-a165-70867728950e' }));
+    expect(other.body.error.code).toBe('rate_limited');
   });
 
-  it('defaults to enhance mode when mode is omitted', async () => {
-    const { handler, fal } = setup();
-    const res = await call(handler, makeRequest());
-    expect(res.body.mode).toBe('enhance');
-    expect(fal.subscribe.mock.calls[0][0]).toBe('fal-ai/seedvr/upscale/image');
-  });
-
-  it('routes pro mode to Topaz', async () => {
-    const { handler, fal } = setup();
-    const res = await call(handler, makeRequest({ mode: 'pro' }));
-    expect(res.body.mode).toBe('pro');
-    expect(fal.subscribe.mock.calls[0][0]).toBe('fal-ai/topaz/upscale/image');
+  it.each([
+    ['missing', null],
+    ['not a UUID', 'abc'],
+  ])('rejects a %s request ID as bad_request without calling fal', async (_label, requestId) => {
+    const { handlers, fal } = setup();
+    const res = await call(handlers.submit, makeRequest({ requestId }));
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('bad_request');
+    expect(fal.storage.upload).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown mode without calling fal', async () => {
-    const { handler, fal } = setup();
-    const res = await call(handler, makeRequest({ mode: 'ultra' }));
+    const { handlers, fal } = setup();
+    const res = await call(handlers.submit, makeRequest({ mode: 'ultra' }));
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('invalid_mode');
     expect(fal.storage.upload).not.toHaveBeenCalled();
-    expect(fal.subscribe).not.toHaveBeenCalled();
   });
 
   it('rejects a missing install ID', async () => {
-    const { handler } = setup();
-    const res = await call(handler, makeRequest({ installId: null }));
+    const { handlers } = setup();
+    const res = await call(handlers.submit, makeRequest({ installId: null }));
     expect(res.body.error.code).toBe('missing_install_id');
   });
 
   it('rejects a body without an image', async () => {
-    const { handler } = setup();
-    const res = await call(handler, makeRequest({ image: null }));
+    const { handlers } = setup();
+    const res = await call(handlers.submit, makeRequest({ image: null }));
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('bad_request');
   });
@@ -117,74 +153,74 @@ describe('POST /api/enhance', () => {
     ['unsupported_format', makeGif(), 415],
     ['image_too_small', makeJpeg(50, 50), 422],
     ['image_too_large', makeJpeg(4000, 3000), 422],
-  ] as const)('returns %s for invalid images without calling fal', async (code, image, status) => {
-    const { handler, fal } = setup();
-    const res = await call(handler, makeRequest({ image }));
+  ] as const)('returns %s for invalid images without creating a job', async (code, image, status) => {
+    const { handlers, fal, jobs } = setup();
+    const res = await call(handlers.submit, makeRequest({ image }));
     expect(res.status).toBe(status);
     expect(res.body.error.code).toBe(code);
-    expect(fal.subscribe).not.toHaveBeenCalled();
+    expect(fal.queue.submit).not.toHaveBeenCalled();
+    expect(await jobs.findRequest(INSTALL_ID, REQUEST_ID)).toBeNull();
   });
 
   it('rejects an oversized upload as file_too_large', async () => {
-    const { handler } = setup();
-    const res = await call(handler, makeRequest({ image: makeJpeg(1000, 1000, { padTo: LIMITS.maxUploadBytes + 1 }) }));
+    const { handlers } = setup();
+    const res = await call(handlers.submit, makeRequest({ image: makeJpeg(1000, 1000, { padTo: LIMITS.maxUploadBytes + 1 }) }));
     expect(res.status).toBe(413);
     expect(res.body.error.code).toBe('file_too_large');
   });
 
   it('rate limits after the daily limit with a retry time', async () => {
-    const { handler, fal } = setup({ limit: 2 });
-    await call(handler, makeRequest());
-    await call(handler, makeRequest());
-    const res = await call(handler, makeRequest());
+    const { handlers, fal } = setup({ limit: 2 });
+    await submitted(handlers, { requestId: 'a0000000-0000-4000-8000-000000000001' });
+    await submitted(handlers, { requestId: 'a0000000-0000-4000-8000-000000000002' });
+    const res = await call(handlers.submit, makeRequest({ requestId: 'a0000000-0000-4000-8000-000000000003' }));
     expect(res.status).toBe(429);
     expect(res.body.error.code).toBe('rate_limited');
     expect(new Date(res.body.error.retryAt).getTime()).toBeGreaterThan(Date.now());
     expect(Number(res.headers.get('Retry-After'))).toBeGreaterThan(0);
-    expect(fal.subscribe).toHaveBeenCalledTimes(2);
+    expect(fal.queue.submit).toHaveBeenCalledTimes(2);
   });
 
-  it('maps a fal failure to provider_error', async () => {
-    const { handler, fal } = setup();
-    fal.subscribe.mockRejectedValue(new Error('fal exploded'));
-    const res = await call(handler, makeRequest());
+  it('maps a fal upload failure to provider_error, creates no job, and lets the same request ID retry', async () => {
+    const { handlers, fal, jobs } = setup();
+    fal.storage.upload.mockRejectedValueOnce(new Error('fal exploded'));
+    const res = await call(handlers.submit, makeRequest());
     expect(res.status).toBe(502);
     expect(res.body.error).toEqual({ code: 'provider_error', message: expect.any(String) });
     expect(JSON.stringify(res.body)).not.toContain('exploded');
+    expect(await jobs.findRequest(INSTALL_ID, REQUEST_ID)).toBeNull();
+
+    const retry = await call(handlers.submit, makeRequest());
+    expect(retry.status).toBe(202);
   });
 
-  it('times out a slow provider', async () => {
-    const { handler, fal } = setup({ timeoutMs: 20 });
-    fal.subscribe.mockReturnValue(new Promise(() => {}));
-    const res = await call(handler, makeRequest());
-    expect(res.status).toBe(504);
-    expect(res.body.error.code).toBe('timeout');
-  });
-
-  it('fails closed when the rate limiter is unavailable', async () => {
+  it('fails closed when the rate limiter or job store is unavailable', async () => {
     const { fal } = setup();
-    const handler = createEnhanceHandler({
-      getUpscaler: () => createFalUpscaler(fal as never),
+    const base = { getUpscaler: () => createFalUpscaler(fal as never), log: () => {} };
+    const noLimiter = createEnhanceHandlers({
+      ...base,
       getRateLimiter: () => ({ check: () => Promise.reject(new Error('redis down')) }),
-      log: () => {},
+      getJobStore: () => memoryJobStore(),
     });
-    const res = await call(handler, makeRequest());
-    expect(res.status).toBe(503);
-    expect(fal.subscribe).not.toHaveBeenCalled();
+    expect((await noLimiter.submit(makeRequest())).status).toBe(503);
+    const noStore = createEnhanceHandlers({
+      ...base,
+      getRateLimiter: () => createRateLimiter(memoryStore()),
+      getJobStore: () => ({ ...memoryJobStore(), findRequest: () => Promise.reject(new Error('redis down')) }),
+    });
+    expect((await noStore.submit(makeRequest())).status).toBe(503);
+    expect(fal.queue.submit).not.toHaveBeenCalled();
   });
 
-  it('logs outcome, mode and timing but no image data', async () => {
-    const { handler, logs } = setup();
-    await call(handler, makeRequest({ mode: 'creative' }));
-    await call(handler, makeRequest({ mode: 'nope' }));
-    expect(logs).toEqual([
-      { event: 'enhance', outcome: 'ok', mode: 'creative', ms: expect.any(Number) },
-      { event: 'enhance', outcome: 'invalid_mode', ms: expect.any(Number) },
-    ]);
+  it('logs rejected submissions with outcome and timing but no image data', async () => {
+    const { handlers, logs } = setup();
+    await call(handlers.submit, makeRequest({ mode: 'nope' }));
+    await submitted(handlers, { mode: 'creative' });
+    expect(logs).toEqual([{ event: 'enhance', outcome: 'invalid_mode', ms: expect.any(Number) }]);
   });
 
   it('rejects an oversized body sent without Content-Length, without reading it all', async () => {
-    const { handler, fal } = setup();
+    const { handlers, fal } = setup();
     const chunk = new Uint8Array(1024 * 1024);
     let pulled = 0;
     const endless = new ReadableStream<Uint8Array>({
@@ -202,46 +238,155 @@ describe('POST /api/enhance', () => {
     } as RequestInit);
     expect(request.headers.get('content-length')).toBeNull();
 
-    const res = await call(handler, request);
+    const res = await call(handlers.submit, request);
     expect(res.status).toBe(413);
     expect(res.body.error.code).toBe('file_too_large');
     expect(pulled).toBeLessThan(25);
-    expect(fal.subscribe).not.toHaveBeenCalled();
+    expect(fal.queue.submit).not.toHaveBeenCalled();
   });
 });
 
-describe('abandoned requests', () => {
-  const enqueueAndHang = (requestId: string) =>
-    jest.fn((_endpoint: string, options: { onEnqueue?: (id: string) => void }) => {
-      options.onEnqueue?.(requestId);
-      return new Promise(() => {});
+describe('GET /api/enhance/{jobId} (status)', () => {
+  it('reports a finished single-pass job with its result, and logs it once', async () => {
+    const { handlers, logs, clock } = setup();
+    const jobId = await submitted(handlers, { mode: 'enhance' });
+    clock.now += 8000;
+    const res = await poll(handlers, jobId);
+    expect(res).toMatchObject({
+      status: 200,
+      body: {
+        jobId,
+        status: 'done',
+        mode: 'enhance',
+        result: { url: 'https://fal.media/fal-1.jpg', width: 4000, height: 4000, mode: 'enhance' },
+      },
     });
+    expect(await poll(handlers, jobId)).toMatchObject({ body: { status: 'done' } });
+    expect(logs).toEqual([{ event: 'enhance', outcome: 'ok', mode: 'enhance', ms: 8000 }]);
+  });
 
-  it('cancels the queued fal job when the app cancels, and logs it as cancelled', async () => {
-    const { handler, fal, logs } = setup({ timeoutMs: 5000 });
-    fal.subscribe = enqueueAndHang('job-app') as never;
-    const client = new AbortController();
-    const pending = handler(makeRequest({ mode: 'creative', signal: client.signal }));
-    // Let the route reach the provider call, then cancel from the app.
-    await new Promise((r) => setTimeout(r, 20));
-    client.abort();
-    await pending;
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/clarity-upscaler', { requestId: 'job-app' });
+  it('reports queued and processing with the pass while fal works', async () => {
+    const { handlers, fal } = setup();
+    const jobId = await submitted(handlers, { mode: 'enhance' });
+    fal.queue.status.mockResolvedValueOnce({ status: 'IN_QUEUE' }).mockResolvedValueOnce({ status: 'IN_PROGRESS' });
+    expect((await poll(handlers, jobId)).body).toEqual({ jobId, status: 'queued', mode: 'enhance', pass: 1, passes: 1 });
+    expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 1, passes: 1 });
+  });
+
+  it('runs a tiny Pro crop in two passes, reporting pass 2 of 2 in between', async () => {
+    const { handlers, fal } = setup();
+    const jobId = await submitted(handlers, { mode: 'pro', image: makeJpeg(128, 275) });
+    fal.queue.status.mockResolvedValueOnce({ status: 'COMPLETED' }).mockResolvedValueOnce({ status: 'IN_PROGRESS' });
+
+    expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 2, passes: 2 });
+    expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 2, passes: 2 });
+    const done = await poll(handlers, jobId);
+    expect(done.body).toMatchObject({ status: 'done', result: { url: 'https://fal.media/fal-2.jpg', width: 1280, height: 2750 } });
+    const factors = (fal.queue.submit.mock.calls as unknown as [string, { input: { upscale_factor: number; image_url: string } }][]).map(
+      ([, o]) => [o.input.upscale_factor, o.input.image_url],
+    );
+    expect(factors).toEqual([
+      [4, 'https://fal.media/in.jpg'],
+      [2.5, 'https://fal.media/fal-1.jpg'],
+    ]);
+  });
+
+  it('queues pass 2 once even when two status checks overlap', async () => {
+    const { handlers, fal } = setup();
+    const jobId = await submitted(handlers, { mode: 'creative', image: makeJpeg(128, 275) });
+    let release!: () => void;
+    fal.queue.result.mockImplementationOnce(async (_e, { requestId }) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return { data: { image: { url: `https://fal.media/${requestId}.jpg` } }, requestId };
+    });
+    const first = poll(handlers, jobId);
+    await new Promise((r) => setTimeout(r, 10));
+    // The second check finds the job locked and reports it as stored.
+    expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'queued', pass: 1 });
+    release();
+    expect((await first).body).toMatchObject({ status: 'processing', pass: 2 });
+    expect(fal.queue.submit).toHaveBeenCalledTimes(2);
+  });
+
+  it('continues a job when the app comes back long after pass 1 finished', async () => {
+    const { handlers, fal, clock } = setup();
+    const jobId = await submitted(handlers, { mode: 'pro', image: makeJpeg(128, 275) });
+    clock.now += 5 * 60_000;
+    expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 2 });
+    expect(fal.queue.cancel).not.toHaveBeenCalled();
+  });
+
+  it('times out a pass that has waited more than 120 s and cancels it', async () => {
+    const { handlers, fal, logs, clock } = setup();
+    const jobId = await submitted(handlers, { mode: 'pro' });
+    fal.queue.status.mockResolvedValue({ status: 'IN_QUEUE' });
+    clock.now += LIMITS.providerTimeoutMs + 1;
+    expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'failed', error: { code: 'timeout' } });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
+    expect(logs.at(-1)).toMatchObject({ outcome: 'timeout', mode: 'pro' });
+  });
+
+  it('reports a provider failure as provider_error without details', async () => {
+    const { handlers, fal } = setup();
+    const jobId = await submitted(handlers);
+    fal.queue.result.mockRejectedValueOnce(new Error('model exploded'));
+    const res = await poll(handlers, jobId);
+    expect(res.body).toMatchObject({ status: 'failed', error: { code: 'provider_error' } });
+    expect(JSON.stringify(res.body)).not.toContain('exploded');
+  });
+
+  it("answers job_not_found for another installation's job, revealing nothing", async () => {
+    const { handlers, fal } = setup();
+    const jobId = await submitted(handlers);
+    const res = await poll(handlers, jobId, OTHER_INSTALL);
+    expect(res).toEqual({ status: 404, headers: expect.anything(), body: { error: { code: 'job_not_found', message: expect.any(String) } } });
+    expect(fal.queue.status).not.toHaveBeenCalled();
+  });
+
+  it('answers job_not_found for an unknown or expired job', async () => {
+    const { handlers, clock } = setup();
+    expect((await poll(handlers, 'nope')).status).toBe(404);
+    const jobId = await submitted(handlers);
+    clock.now += 60 * 60 * 1000;
+    expect((await poll(handlers, jobId)).body.error.code).toBe('job_not_found');
+  });
+
+  it('requires the install ID', async () => {
+    const { handlers } = setup();
+    const jobId = await submitted(handlers);
+    const res = await call((r) => handlers.status(r, jobId), new Request(`http://localhost${ENHANCE_PATH}/${jobId}`));
+    expect(res.body.error.code).toBe('missing_install_id');
+  });
+});
+
+describe('DELETE /api/enhance/{jobId} (cancel)', () => {
+  it('cancels the queued fal pass, starts no further pass, and logs it as cancelled', async () => {
+    const { handlers, fal, logs } = setup();
+    const jobId = await submitted(handlers, { mode: 'creative', image: makeJpeg(128, 275) });
+    const res = await call((r) => handlers.cancel(r, jobId), jobRequest(jobId, 'DELETE'));
+    expect(res.body).toEqual({ jobId, status: 'cancelled', mode: 'creative' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/clarity-upscaler', { requestId: 'fal-1' });
     expect(logs.at(-1)).toMatchObject({ outcome: 'cancelled', mode: 'creative' });
+
+    expect((await poll(handlers, jobId)).body.status).toBe('cancelled');
+    expect(fal.queue.status).not.toHaveBeenCalled();
+    expect(fal.queue.submit).toHaveBeenCalledTimes(1);
   });
 
-  it('cancels the queued fal job on timeout and responds with timeout', async () => {
-    const { handler, fal } = setup({ timeoutMs: 20 });
-    fal.subscribe = enqueueAndHang('job-slow') as never;
-    const res = await call(handler, makeRequest({ mode: 'pro' }));
-    expect(res.status).toBe(504);
-    expect(res.body.error.code).toBe('timeout');
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'job-slow' });
+  it('leaves a finished job as it is', async () => {
+    const { handlers, fal } = setup();
+    const jobId = await submitted(handlers);
+    await poll(handlers, jobId);
+    const res = await call((r) => handlers.cancel(r, jobId), jobRequest(jobId, 'DELETE'));
+    expect(res.body).toMatchObject({ status: 'done' });
+    expect(fal.queue.cancel).not.toHaveBeenCalled();
   });
 
-  it('cancels nothing for a normal request', async () => {
-    const { handler, fal } = setup();
-    await call(handler, makeRequest());
+  it("can't cancel another installation's job", async () => {
+    const { handlers, fal } = setup();
+    const jobId = await submitted(handlers);
+    const res = await call((r) => handlers.cancel(r, jobId), jobRequest(jobId, 'DELETE', OTHER_INSTALL));
+    expect(res.status).toBe(404);
     expect(fal.queue.cancel).not.toHaveBeenCalled();
   });
 });
