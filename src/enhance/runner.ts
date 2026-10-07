@@ -13,6 +13,8 @@ export const POLL_INTERVAL_MS = 2000;
 export const NETWORK_GRACE_MS = 30_000;
 /** How many times a submission that failed while the app was in the background is resent on return. */
 export const SUBMIT_RETRIES = 3;
+/** A status check that hasn't answered in this long is abandoned and counted as a network failure. */
+export const POLL_TIMEOUT_MS = 15_000;
 
 export interface JobApi {
   submit(upload: LocalImage, mode: EnhanceMode, requestId: string, signal: AbortSignal): Promise<string>;
@@ -47,6 +49,7 @@ export interface RunnerOptions {
   now?: () => number;
   pollIntervalMs?: number;
   networkGraceMs?: number;
+  pollTimeoutMs?: number;
 }
 
 const isNetworkFailure = (err: unknown) => err instanceof EnhanceRequestError && err.failure.code === 'network';
@@ -71,19 +74,20 @@ export function createEnhancementRunner({
   now = Date.now,
   pollIntervalMs = POLL_INTERVAL_MS,
   networkGraceMs = NETWORK_GRACE_MS,
+  pollTimeoutMs = POLL_TIMEOUT_MS,
 }: RunnerOptions = {}) {
   let controller: AbortController | null = null;
 
   /** Resolves when the app is in the foreground; rejects with `cancelled` on abort. */
   function waitForForeground(signal: AbortSignal): Promise<void> {
-    return pause(0, signal).then(() => undefined);
+    return pause(0, signal);
   }
 
   /**
    * Waits `ms` in the foreground. Time in the background doesn't count: the wait pauses there
-   * and ends as soon as the app returns. Resolves true if the app was in the background meanwhile.
+   * and ends as soon as the app returns.
    */
-  function pause(ms: number, signal: AbortSignal): Promise<boolean> {
+  function pause(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let wasAway = !foreground.isActive();
@@ -94,7 +98,7 @@ export function createEnhancementRunner({
       };
       const finish = () => {
         cleanup();
-        resolve(wasAway);
+        resolve();
       };
       const onAbort = () => {
         cleanup();
@@ -119,8 +123,7 @@ export function createEnhancementRunner({
    * failed. Cancel doesn't abort the upload: the service would queue the job anyway, and the app
    * needs its ID to cancel it, so the caller cancels the job once the submission returns.
    */
-  async function submit(upload: LocalImage, mode: EnhanceMode, signal: AbortSignal): Promise<string> {
-    const requestId = newRequestId();
+  async function submit(upload: LocalImage, mode: EnhanceMode, requestId: string, signal: AbortSignal): Promise<string> {
     const uploading = new AbortController().signal;
     for (let attempt = 0; ; attempt++) {
       let wentAway = !foreground.isActive();
@@ -142,26 +145,58 @@ export function createEnhancementRunner({
   async function follow(id: number, jobId: string, signal: AbortSignal): Promise<LocalImage> {
     const { updateRequest } = useSession.getState();
     let lastSuccess = now();
-    for (;;) {
-      let status: EnhanceJobStatus | null = null;
-      try {
-        status = await api.get(jobId, signal);
-        lastSuccess = now();
-      } catch (err) {
-        // Keep trying through short outages; a job that no longer exists ends the run.
-        if (!isNetworkFailure(err) || now() - lastSuccess >= networkGraceMs) throw err;
+    let inFlight: AbortController | null = null;
+    let restart = false;
+    // Time in the background isn't a network failure: the grace period starts again on return,
+    // and a check that stalled while the app was away is replaced by a fresh one at once.
+    const unsubscribe = foreground.subscribe((active) => {
+      if (!active) return;
+      lastSuccess = now();
+      if (inFlight) {
+        restart = true;
+        inFlight.abort();
       }
-      if (status) {
-        if (status.status === 'done') {
-          if (!status.result) throw fail('provider_error');
-          return api.download(status.result, signal);
+    });
+    try {
+      for (;;) {
+        let status: EnhanceJobStatus | null = null;
+        const check = new AbortController();
+        inFlight = check;
+        const stop = () => check.abort();
+        signal.addEventListener('abort', stop, { once: true });
+        const timer = setTimeout(stop, pollTimeoutMs);
+        try {
+          status = await api.get(jobId, check.signal);
+          lastSuccess = now();
+        } catch (err) {
+          if (signal.aborted) throw fail('cancelled');
+          // A check that timed out or was replaced counts like a network failure. Keep trying
+          // through short outages; a job that no longer exists ends the run.
+          const transient = isNetworkFailure(err) || check.signal.aborted;
+          if (!transient) throw err;
+          if (now() - lastSuccess >= networkGraceMs) throw fail('network');
+        } finally {
+          clearTimeout(timer);
+          signal.removeEventListener('abort', stop);
+          inFlight = null;
         }
-        if (status.status === 'failed') throw fail(status.error?.code ?? 'provider_error', status.error?.retryAt);
-        if (status.status === 'cancelled') throw fail('cancelled');
-        updateRequest(id, { phase: phaseOf(status) });
+        if (status) {
+          if (status.status === 'done') {
+            if (!status.result) throw fail('provider_error');
+            return await api.download(status.result, signal);
+          }
+          if (status.status === 'failed') throw fail(status.error?.code ?? 'provider_error', status.error?.retryAt);
+          if (status.status === 'cancelled') throw fail('cancelled');
+          updateRequest(id, { phase: phaseOf(status) });
+        }
+        if (restart) {
+          restart = false;
+          continue;
+        }
+        await pause(pollIntervalMs, signal);
       }
-      // Background time isn't a network failure; start the grace period again on return.
-      if (await pause(pollIntervalMs, signal)) lastSuccess = now();
+    } finally {
+      unsubscribe();
     }
   }
 
@@ -169,21 +204,25 @@ export function createEnhancementRunner({
     async start(mode: EnhanceMode): Promise<void> {
       const { upload, request, beginRequest, updateRequest, resolveRequest, failRequest } = useSession.getState();
       if (!upload) return;
-      // A superseded job's result would never be shown; stop it on the service too.
-      if (request.status === 'pending' && request.jobId) void api.cancel(request.jobId);
+      // Retry after a network failure picks up where it left off: it resumes the job, which may
+      // have kept running, or resubmits with the same request ID, which returns that job if the
+      // service created it.
+      const retrying = request.status === 'error' && request.mode === mode && request.error.code === 'network';
+      const resumeJobId = retrying ? request.jobId : undefined;
+      // A job this run replaces would never be shown; stop it on the service too.
+      const replaced = request.status !== 'idle' && !retrying ? request.jobId : undefined;
+      if (replaced) void api.cancel(replaced);
       controller?.abort();
       const current = new AbortController();
       controller = current;
       const { signal } = current;
 
-      // Retry after a network failure resumes the job, which may have kept running.
-      const resumeJobId =
-        request.status === 'error' && request.mode === mode && request.error.code === 'network' ? request.jobId : undefined;
-      const id = beginRequest(mode, resumeJobId);
+      const requestId = (retrying && request.requestId) || newRequestId();
+      const id = beginRequest(mode, { jobId: resumeJobId, requestId });
       let jobId = resumeJobId;
       try {
         if (!jobId) {
-          jobId = await submit(upload, mode, signal);
+          jobId = await submit(upload, mode, requestId, signal);
           if (signal.aborted) {
             void api.cancel(jobId);
             throw fail('cancelled');
@@ -198,19 +237,23 @@ export function createEnhancementRunner({
           err instanceof EnhanceRequestError
             ? err.failure
             : { code: 'network', message: failureMessage({ code: 'network' }) };
-        // After a network failure the job may still be running; keep it so Retry can resume it.
-        failRequest(id, mode, failure, failure.code === 'network' ? jobId : undefined);
+        // After a network failure the job may still exist; keep its handles so Retry can resume it.
+        failRequest(id, mode, failure, failure.code === 'network' ? { jobId, requestId } : undefined);
       } finally {
         if (controller === current) controller = null;
       }
     },
 
-    /** Stops waiting and cancels the job on the service (the Cancel button, or leaving the result screen). */
+    /**
+     * Stops waiting and cancels the job on the service: the Cancel button, leaving the result
+     * screen, or switching to another mode's result. Also cancels a job kept after a network
+     * failure, which may still be running.
+     */
     cancel(): void {
       controller?.abort();
       controller = null;
       const { request, cancelRequest } = useSession.getState();
-      if (request.status === 'pending' && request.jobId) void api.cancel(request.jobId);
+      if (request.status !== 'idle' && request.jobId) void api.cancel(request.jobId);
       cancelRequest();
     },
   };

@@ -107,6 +107,22 @@ interface FalImageOutput {
 
 /** fal drops a queued pass that hasn't started within this many seconds, even if nobody polls. */
 const PASS_START_TIMEOUT_S = LIMITS.providerTimeoutMs / 1000;
+/**
+ * Each fal call in a status check gives up after this long, so one advance (status, result and
+ * submit) always finishes well inside the job lock (`JOB_LOCK_MS`).
+ */
+export const FAL_CALL_TIMEOUT_MS = 15_000;
+
+class FalCallTimeout extends Error {}
+
+/** Stops waiting for a fal call after `FAL_CALL_TIMEOUT_MS`. */
+function bounded<T>(call: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new FalCallTimeout('fal call timed out')), FAL_CALL_TIMEOUT_MS);
+  });
+  return Promise.race([call, timeout]).finally(() => clearTimeout(timer));
+}
 
 /** Short, log-safe description of a fal client error (status, message, response body). */
 export function describeProviderError(err: unknown, secrets: string[] = []): string {
@@ -126,24 +142,31 @@ export function describeProviderError(err: unknown, secrets: string[] = []): str
  * fal implementation of the job seam (enhance-job-api design decisions 1 and 6). `start` uploads
  * and queues pass 1; each `advance` checks the active pass and queues the next one on its output.
  */
-export function createFalUpscaler(client: FalLike, onProviderError?: (err: unknown) => void): Upscaler {
+export function createFalUpscaler(
+  client: FalLike,
+  onProviderError?: (err: unknown) => void,
+  now: () => number = Date.now,
+): Upscaler {
   async function submitPass(mode: EnhanceMode, sourceUrl: string, passes: number[], index: number) {
     const spec = MODEL_TABLE[mode];
     if (process.env.NODE_ENV !== 'production') {
       console.info(`[fal] ${mode} pass ${index + 1}/${passes.length}: ${spec.endpoint} at ${passes[index].toFixed(2)}x`);
     }
-    const queued = await client.queue.submit(spec.endpoint, {
-      input: spec.buildInput(sourceUrl, passes[index]),
-      startTimeout: PASS_START_TIMEOUT_S,
-      storageSettings: { expiresIn: OBJECT_EXPIRY },
-    });
-    return queued.request_id;
+    const queued = await bounded(
+      client.queue.submit(spec.endpoint, {
+        input: spec.buildInput(sourceUrl, passes[index]),
+        startTimeout: PASS_START_TIMEOUT_S,
+        storageSettings: { expiresIn: OBJECT_EXPIRY },
+      }),
+    );
+    // A pass's time starts when fal has it, not before a slow upload or status check.
+    return { providerRequestId: queued.request_id, passQueuedAt: now() };
   }
 
   async function cancelPass(job: JobRecord) {
     if ((job.status !== 'queued' && job.status !== 'processing') || !job.providerRequestId) return;
     try {
-      await client.queue.cancel(MODEL_TABLE[job.mode].endpoint, { requestId: job.providerRequestId });
+      await bounded(client.queue.cancel(MODEL_TABLE[job.mode].endpoint, { requestId: job.providerRequestId }));
     } catch {
       // Best effort: a pass that already started or finished can't be cancelled.
     }
@@ -156,36 +179,33 @@ export function createFalUpscaler(client: FalLike, onProviderError?: (err: unkno
   });
 
   return {
-    async start({ image, width, height, mode }, now = Date.now()) {
+    async start({ image, width, height, mode }) {
       const spec = MODEL_TABLE[mode];
       // Rejects inputs the model can't take before anything is uploaded or billed.
       const plan = planForModel(spec, width, height);
       const passes = planPasses(plan.factor, spec.maxFactorPerPass);
       try {
         const sourceUrl = await client.storage.upload(image, { lifecycle: { expiresIn: OBJECT_EXPIRY } });
-        const providerRequestId = await submitPass(mode, sourceUrl, passes, 0);
-        return {
-          passes,
-          outputWidth: plan.outputWidth,
-          outputHeight: plan.outputHeight,
-          sourceUrl,
-          providerRequestId,
-          passQueuedAt: now,
-        };
+        const queued = await submitPass(mode, sourceUrl, passes, 0);
+        return { passes, outputWidth: plan.outputWidth, outputHeight: plan.outputHeight, sourceUrl, ...queued };
       } catch (err) {
         onProviderError?.(err);
         throw providerError();
       }
     },
 
-    async advance(job, now = Date.now()) {
-      if ((job.status !== 'queued' && job.status !== 'processing') || !job.providerRequestId) return job;
+    async advance(job) {
+      if (job.status !== 'queued' && job.status !== 'processing') return job;
+      if (!job.providerRequestId) {
+        // Still being submitted. A submission that never finished (e.g. the server stopped) times out.
+        return now() - job.createdAt > LIMITS.providerTimeoutMs ? failed(job, timeoutError()) : job;
+      }
       const { endpoint } = MODEL_TABLE[job.mode];
       const requestId = job.providerRequestId;
 
       let status;
       try {
-        status = await client.queue.status(endpoint, { requestId });
+        status = await bounded(client.queue.status(endpoint, { requestId }));
       } catch (err) {
         // A failed status check says nothing about the job; try again on the next poll.
         onProviderError?.(err);
@@ -193,7 +213,7 @@ export function createFalUpscaler(client: FalLike, onProviderError?: (err: unkno
       }
 
       if (status?.status !== 'COMPLETED') {
-        if (now - (job.passQueuedAt ?? job.createdAt) > LIMITS.providerTimeoutMs) {
+        if (now() - (job.passQueuedAt ?? job.createdAt) > LIMITS.providerTimeoutMs) {
           await cancelPass(job);
           return failed(job, timeoutError());
         }
@@ -204,10 +224,11 @@ export function createFalUpscaler(client: FalLike, onProviderError?: (err: unkno
 
       let output: FalImageOutput;
       try {
-        output = (await client.queue.result(endpoint, { requestId })).data as FalImageOutput;
+        output = (await bounded(client.queue.result(endpoint, { requestId }))).data as FalImageOutput;
       } catch (err) {
         onProviderError?.(err);
-        return failed(job, providerError());
+        // A slow result fetch is retried on the next poll; anything else means the model failed.
+        return err instanceof FalCallTimeout ? job : failed(job, providerError());
       }
       const url = output.image?.url;
       if (!url) return failed(job, providerError());
@@ -215,8 +236,8 @@ export function createFalUpscaler(client: FalLike, onProviderError?: (err: unkno
       const next = job.passIndex + 1;
       if (next < job.passes.length) {
         try {
-          const providerRequestId = await submitPass(job.mode, url, job.passes, next);
-          return { ...job, status: 'processing', passIndex: next, providerRequestId, passQueuedAt: now, sourceUrl: url };
+          const queued = await submitPass(job.mode, url, job.passes, next);
+          return { ...job, status: 'processing', passIndex: next, sourceUrl: url, ...queued };
         } catch (err) {
           onProviderError?.(err);
           return failed(job, providerError());

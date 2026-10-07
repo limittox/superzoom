@@ -55,13 +55,36 @@ describe('memoryJobStore', () => {
   it('lets one holder take a job lock at a time, and frees a lock that was never released', async () => {
     let now = 0;
     const store = memoryJobStore(() => now);
-    expect(await store.lock('job-1')).toBe(true);
-    expect(await store.lock('job-1')).toBe(false);
-    expect(await store.lock('job-2')).toBe(true);
-    await store.unlock('job-1');
-    expect(await store.lock('job-1')).toBe(true);
+    const token = await store.lock('job-1');
+    expect(token).toEqual(expect.any(String));
+    expect(await store.lock('job-1')).toBeNull();
+    expect(await store.lock('job-2')).toEqual(expect.any(String));
+    await store.unlock('job-1', token!);
+    expect(await store.lock('job-1')).toEqual(expect.any(String));
     now += JOB_LOCK_MS;
-    expect(await store.lock('job-1')).toBe(true);
+    expect(await store.lock('job-1')).toEqual(expect.any(String));
+  });
+
+  it("doesn't release a lock that expired and was taken by someone else", async () => {
+    let now = 0;
+    const store = memoryJobStore(() => now);
+    const slow = await store.lock('job-1');
+    now += JOB_LOCK_MS;
+    const next = await store.lock('job-1');
+    await store.unlock('job-1', slow!);
+    expect(await store.lock('job-1')).toBeNull();
+    await store.unlock('job-1', next!);
+    expect(await store.lock('job-1')).toEqual(expect.any(String));
+  });
+
+  it('records cancel requests until the job expires', async () => {
+    let now = 1_000_000;
+    const store = memoryJobStore(() => now);
+    expect(await store.isCancelRequested('job-1')).toBe(false);
+    await store.requestCancel('job-1', 1_000_000);
+    expect(await store.isCancelRequested('job-1')).toBe(true);
+    now += JOB_TTL_MS;
+    expect(await store.isCancelRequested('job-1')).toBe(false);
   });
 });
 
@@ -85,6 +108,10 @@ describe('upstashJobStore', () => {
         return 'OK';
       }),
       del: jest.fn(async (key: string) => (values.delete(key) ? 1 : 0)),
+      // The compare-and-delete unlock script.
+      eval: jest.fn(async (_script: string, [key]: string[], [token]: string[]) =>
+        values.get(key) === token ? (values.delete(key), 1) : 0,
+      ),
     };
   }
 
@@ -106,13 +133,26 @@ describe('upstashJobStore', () => {
     expect(await store.findRequest('install-123', 'req-1')).toBeNull();
   });
 
-  it('locks with SET NX and a 15 s expiry', async () => {
+  it('locks with SET NX, an owner token and the lock expiry, and unlocks only its own lock', async () => {
     const redis = fakeRedis();
     const store = upstashJobStore(redis as unknown as Redis);
-    expect(await store.lock('job-1')).toBe(true);
-    expect(await store.lock('job-1')).toBe(false);
-    expect(redis.set).toHaveBeenCalledWith('job:job-1:lock', '1', { nx: true, px: JOB_LOCK_MS });
-    await store.unlock('job-1');
-    expect(await store.lock('job-1')).toBe(true);
+    const token = await store.lock('job-1');
+    expect(token).toEqual(expect.any(String));
+    expect(await store.lock('job-1')).toBeNull();
+    expect(redis.set).toHaveBeenCalledWith('job:job-1:lock', token, { nx: true, px: JOB_LOCK_MS });
+    await store.unlock('job-1', 'someone-else');
+    expect(await store.lock('job-1')).toBeNull();
+    await store.unlock('job-1', token!);
+    expect(redis.eval).toHaveBeenLastCalledWith(expect.stringContaining('del'), ['job:job-1:lock'], [token]);
+    expect(await store.lock('job-1')).toEqual(expect.any(String));
+  });
+
+  it('stores cancel requests with the job lifetime', async () => {
+    const redis = fakeRedis();
+    const store = upstashJobStore(redis as unknown as Redis, () => 1_000_000);
+    await store.requestCancel('job-1', 1_000_000);
+    expect(redis.set).toHaveBeenCalledWith('job:job-1:cancel', '1', { px: JOB_TTL_MS });
+    expect(await store.isCancelRequested('job-1')).toBe(true);
+    expect(await store.isCancelRequested('job-2')).toBe(false);
   });
 });

@@ -89,7 +89,7 @@ export default function ResultScreen() {
     setMode(mode);
     if (results[mode]) {
       useSession.getState().showMode(mode);
-      if (request.status === 'pending') enhancementRunner.cancel();
+      if (request.status !== 'idle') enhancementRunner.cancel();
     } else {
       enhance(mode);
     }

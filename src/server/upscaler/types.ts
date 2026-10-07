@@ -22,13 +22,14 @@ export type StartedJob = Pick<
  */
 export interface Upscaler {
   /** Uploads the image and queues the first pass. Throws `ApiError` (e.g. `image_too_small`, `provider_error`). */
-  start(request: StartRequest, now?: number): Promise<StartedJob>;
+  start(request: StartRequest): Promise<StartedJob>;
   /**
    * Checks the active pass and returns the job's next state: still waiting, the next pass
    * queued, done, or failed (`provider_error`, or `timeout` past the per-pass limit, in which
-   * case the pass is cancelled). Never throws for provider failures.
+   * case the pass is cancelled). A job still being submitted (no provider handle) is returned
+   * as it is until it times out. Never throws for provider failures.
    */
-  advance(job: JobRecord, now?: number): Promise<JobRecord>;
+  advance(job: JobRecord): Promise<JobRecord>;
   /** Asks the provider to drop the active pass. Best effort; never throws. */
   cancel(job: JobRecord): Promise<void>;
 }

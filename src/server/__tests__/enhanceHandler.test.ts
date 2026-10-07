@@ -23,7 +23,10 @@ function fakeFal() {
       submit: jest.fn(async () => ({ request_id: `fal-${++submitted}`, status: 'IN_QUEUE' })),
       status: jest.fn(async (): Promise<{ status: string }> => ({ status: 'COMPLETED' })),
       result: jest.fn(
-        async (_endpoint: string, { requestId }: { requestId: string }): Promise<{ data: unknown; requestId: string }> => ({
+        async (
+          _endpoint: string,
+          { requestId }: { requestId: string },
+        ): Promise<{ data: unknown; requestId: string }> => ({
           data: { image: { url: `https://fal.media/${requestId}.jpg` } },
           requestId,
         }),
@@ -41,7 +44,7 @@ function setup({ limit = 50 } = {}) {
   const jobs = memoryJobStore(() => clock.now);
   let ids = 0;
   const handlers = createEnhanceHandlers({
-    getUpscaler: () => createFalUpscaler(fal as never),
+    getUpscaler: () => createFalUpscaler(fal as never, undefined, () => clock.now),
     getRateLimiter: () => limiter,
     getJobStore: () => jobs,
     log: (e) => logs.push(e),
@@ -76,7 +79,10 @@ async function call(handler: (r: Request) => Promise<Response>, request: Request
 }
 
 /** Submits a job and returns its ID. */
-async function submitted(handlers: ReturnType<typeof setup>['handlers'], options: Parameters<typeof makeRequest>[0] = {}) {
+async function submitted(
+  handlers: ReturnType<typeof setup>['handlers'],
+  options: Parameters<typeof makeRequest>[0] = {},
+) {
   const res = await call(handlers.submit, makeRequest(options));
   expect(res.status).toBe(202);
   return res.body.jobId as string;
@@ -94,7 +100,11 @@ describe('POST /api/enhance (submit)', () => {
     expect(fal.queue.submit).toHaveBeenCalledTimes(1);
     expect((fal.queue.submit.mock.calls[0] as unknown as [string])[0]).toBe('fal-ai/seedvr/upscale/image');
     expect(fal.queue.status).not.toHaveBeenCalled();
-    expect(await jobs.get('job-1')).toMatchObject({ status: 'queued', installId: INSTALL_ID, providerRequestId: 'fal-1' });
+    expect(await jobs.get('job-1')).toMatchObject({
+      status: 'queued',
+      installId: INSTALL_ID,
+      providerRequestId: 'fal-1',
+    });
   });
 
   it('defaults to enhance mode when mode is omitted, and routes pro mode to Topaz', async () => {
@@ -164,7 +174,10 @@ describe('POST /api/enhance (submit)', () => {
 
   it('rejects an oversized upload as file_too_large', async () => {
     const { handlers } = setup();
-    const res = await call(handlers.submit, makeRequest({ image: makeJpeg(1000, 1000, { padTo: LIMITS.maxUploadBytes + 1 }) }));
+    const res = await call(
+      handlers.submit,
+      makeRequest({ image: makeJpeg(1000, 1000, { padTo: LIMITS.maxUploadBytes + 1 }) }),
+    );
     expect(res.status).toBe(413);
     expect(res.body.error.code).toBe('file_too_large');
   });
@@ -181,13 +194,14 @@ describe('POST /api/enhance (submit)', () => {
     expect(fal.queue.submit).toHaveBeenCalledTimes(2);
   });
 
-  it('maps a fal upload failure to provider_error, creates no job, and lets the same request ID retry', async () => {
+  it('maps a fal upload failure to provider_error, records the job as failed, and lets the same request ID retry', async () => {
     const { handlers, fal, jobs } = setup();
     fal.storage.upload.mockRejectedValueOnce(new Error('fal exploded'));
     const res = await call(handlers.submit, makeRequest());
     expect(res.status).toBe(502);
     expect(res.body.error).toEqual({ code: 'provider_error', message: expect.any(String) });
     expect(JSON.stringify(res.body)).not.toContain('exploded');
+    expect(await jobs.get('job-1')).toMatchObject({ status: 'failed', error: { code: 'provider_error' } });
     expect(await jobs.findRequest(INSTALL_ID, REQUEST_ID)).toBeNull();
 
     const retry = await call(handlers.submit, makeRequest());
@@ -246,6 +260,107 @@ describe('POST /api/enhance (submit)', () => {
   });
 });
 
+describe('races between submissions, status checks and cancels', () => {
+  /** Makes the next fal call of `mock` wait until the returned function is called. */
+  function hold<T>(mock: jest.Mock, value: () => T) {
+    let release!: () => void;
+    mock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return value();
+    });
+    return () => release();
+  }
+  const tick = () => new Promise((r) => setTimeout(r, 10));
+
+  it('gives a resubmission during the upload the same job, which reports queued until the upload finishes', async () => {
+    const { handlers, fal } = setup();
+    const release = hold(fal.storage.upload, () => 'https://fal.media/in.jpg');
+    const first = call(handlers.submit, makeRequest({ mode: 'enhance' }));
+    await tick();
+
+    const again = await call(handlers.submit, makeRequest({ mode: 'enhance' }));
+    expect(again).toMatchObject({ status: 202, body: { jobId: 'job-1' } });
+    expect((await poll(handlers, 'job-1')).body).toEqual({ jobId: 'job-1', status: 'queued', mode: 'enhance' });
+
+    release();
+    expect((await first).body).toEqual({ jobId: 'job-1' });
+    expect((await poll(handlers, 'job-1')).body).toMatchObject({ status: 'done' });
+    expect(fal.storage.upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a job that is cancelled during its upload, as soon as its first pass is queued', async () => {
+    const { handlers, fal } = setup();
+    const release = hold(fal.storage.upload, () => 'https://fal.media/in.jpg');
+    const submit = call(handlers.submit, makeRequest({ mode: 'pro' }));
+    await tick();
+    const cancel = await call((r) => handlers.cancel(r, 'job-1'), jobRequest('job-1', 'DELETE'));
+    expect(cancel.body.status).toBe('cancelled');
+
+    release();
+    await submit;
+    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
+    expect((await poll(handlers, 'job-1')).body.status).toBe('cancelled');
+  });
+
+  it('lets a cancel during a status check win, cancelling the pass that check just queued', async () => {
+    const { handlers, fal, logs } = setup();
+    const jobId = await submitted(handlers, { mode: 'creative', image: makeJpeg(128, 275) });
+    const release = hold(fal.queue.result, () => ({
+      data: { image: { url: 'https://fal.media/fal-1.jpg' } },
+      requestId: 'x',
+    }));
+    const check = poll(handlers, jobId);
+    await tick();
+
+    // The status check holds the lock; the cancel is recorded for it to act on.
+    const cancel = await call((r) => handlers.cancel(r, jobId), jobRequest(jobId, 'DELETE'));
+    expect(cancel.body.status).toBe('cancelled');
+
+    release();
+    expect((await check).body.status).toBe('cancelled');
+    // Pass 2 was queued by the check and immediately cancelled.
+    expect(fal.queue.submit).toHaveBeenCalledTimes(2);
+    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/clarity-upscaler', { requestId: 'fal-2' });
+    expect((await poll(handlers, jobId)).body.status).toBe('cancelled');
+    expect(fal.queue.submit).toHaveBeenCalledTimes(2);
+    expect(logs.filter((l) => l.outcome === 'cancelled')).toHaveLength(1);
+  });
+
+  it('cancels a just-queued pass whose handle could not be saved', async () => {
+    const { handlers, fal, jobs } = setup();
+    const jobId = await submitted(handlers, { mode: 'pro', image: makeJpeg(128, 275) });
+    const put = jobs.put.bind(jobs);
+    jest.spyOn(jobs, 'put').mockImplementationOnce(async () => {
+      throw new Error('redis down');
+    });
+    const res = await poll(handlers, jobId);
+    expect(res.status).toBe(503);
+    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-2' });
+    // The stored job still points at pass 1, so the next check queues pass 2 again.
+    (jobs.put as jest.Mock).mockImplementation(put);
+    expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 2 });
+  });
+
+  it('times out a job whose submission never finished (e.g. the server stopped mid-upload)', async () => {
+    const { handlers, jobs, clock, logs } = setup();
+    await jobs.put({
+      id: 'job-9',
+      installId: INSTALL_ID,
+      mode: 'pro',
+      createdAt: clock.now,
+      status: 'queued',
+      passes: [],
+      outputWidth: 0,
+      outputHeight: 0,
+      passIndex: 0,
+    });
+    expect((await poll(handlers, 'job-9')).body).toEqual({ jobId: 'job-9', status: 'queued', mode: 'pro' });
+    clock.now += LIMITS.providerTimeoutMs + 1;
+    expect((await poll(handlers, 'job-9')).body).toMatchObject({ status: 'failed', error: { code: 'timeout' } });
+    expect(logs.at(-1)).toMatchObject({ outcome: 'timeout', mode: 'pro' });
+  });
+});
+
 describe('GET /api/enhance/{jobId} (status)', () => {
   it('reports a finished single-pass job with its result, and logs it once', async () => {
     const { handlers, logs, clock } = setup();
@@ -269,7 +384,13 @@ describe('GET /api/enhance/{jobId} (status)', () => {
     const { handlers, fal } = setup();
     const jobId = await submitted(handlers, { mode: 'enhance' });
     fal.queue.status.mockResolvedValueOnce({ status: 'IN_QUEUE' }).mockResolvedValueOnce({ status: 'IN_PROGRESS' });
-    expect((await poll(handlers, jobId)).body).toEqual({ jobId, status: 'queued', mode: 'enhance', pass: 1, passes: 1 });
+    expect((await poll(handlers, jobId)).body).toEqual({
+      jobId,
+      status: 'queued',
+      mode: 'enhance',
+      pass: 1,
+      passes: 1,
+    });
     expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 1, passes: 1 });
   });
 
@@ -281,10 +402,13 @@ describe('GET /api/enhance/{jobId} (status)', () => {
     expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 2, passes: 2 });
     expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 2, passes: 2 });
     const done = await poll(handlers, jobId);
-    expect(done.body).toMatchObject({ status: 'done', result: { url: 'https://fal.media/fal-2.jpg', width: 1280, height: 2750 } });
-    const factors = (fal.queue.submit.mock.calls as unknown as [string, { input: { upscale_factor: number; image_url: string } }][]).map(
-      ([, o]) => [o.input.upscale_factor, o.input.image_url],
-    );
+    expect(done.body).toMatchObject({
+      status: 'done',
+      result: { url: 'https://fal.media/fal-2.jpg', width: 1280, height: 2750 },
+    });
+    const factors = (
+      fal.queue.submit.mock.calls as unknown as [string, { input: { upscale_factor: number; image_url: string } }][]
+    ).map(([, o]) => [o.input.upscale_factor, o.input.image_url]);
     expect(factors).toEqual([
       [4, 'https://fal.media/in.jpg'],
       [2.5, 'https://fal.media/fal-1.jpg'],
@@ -339,7 +463,11 @@ describe('GET /api/enhance/{jobId} (status)', () => {
     const { handlers, fal } = setup();
     const jobId = await submitted(handlers);
     const res = await poll(handlers, jobId, OTHER_INSTALL);
-    expect(res).toEqual({ status: 404, headers: expect.anything(), body: { error: { code: 'job_not_found', message: expect.any(String) } } });
+    expect(res).toEqual({
+      status: 404,
+      headers: expect.anything(),
+      body: { error: { code: 'job_not_found', message: expect.any(String) } },
+    });
     expect(fal.queue.status).not.toHaveBeenCalled();
   });
 

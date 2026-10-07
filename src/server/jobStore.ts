@@ -4,8 +4,11 @@ import type { EnhanceError, EnhanceMode, EnhanceSuccess, JobState } from '@/shar
 
 /** Jobs and their idempotency keys expire this long after the job is created (fal's objects expire after 1 h too). */
 export const JOB_TTL_MS = 60 * 60 * 1000;
-/** Long enough for one advance (a fal status, result and submit call), short enough to recover from a crashed one. */
-export const JOB_LOCK_MS = 15_000;
+/**
+ * How long a job lock lasts: longer than one advance can take (each fal call in it is bounded,
+ * see `FAL_CALL_TIMEOUT_MS`), short enough to recover from a crashed one.
+ */
+export const JOB_LOCK_MS = 60_000;
 
 /**
  * One enhancement job (enhance-job-api design decision 2). Holds fal URLs and metadata only,
@@ -41,14 +44,22 @@ export interface JobStore {
   /** Records `jobId` for this request ID unless one is already recorded; returns the winner's job ID. */
   claimRequest(installId: string, requestId: string, jobId: string, createdAt: number): Promise<string>;
   releaseRequest(installId: string, requestId: string): Promise<void>;
-  /** Takes the job's advance lock; false if someone else holds it. */
-  lock(id: string): Promise<boolean>;
-  unlock(id: string): Promise<void>;
+  /** Takes the job's lock; returns an owner token, or null if someone else holds it. */
+  lock(id: string): Promise<string | null>;
+  /** Releases the lock only if `token` still owns it (an expired lock may belong to someone else by now). */
+  unlock(id: string, token: string): Promise<void>;
+  /** Records that the app asked to cancel the job, for whoever holds the lock to act on. */
+  requestCancel(id: string, createdAt: number): Promise<void>;
+  isCancelRequested(id: string): Promise<boolean>;
 }
 
 const jobKey = (id: string) => `job:${id}`;
 const requestKey = (installId: string, requestId: string) => `jobreq:${installId}:${requestId}`;
 const lockKey = (id: string) => `job:${id}:lock`;
+const cancelKey = (id: string) => `job:${id}:cancel`;
+/** Deletes the lock only if it still holds this owner's token. */
+const UNLOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+const newToken = () => crypto.randomUUID();
 /** Remaining lifetime of a job created at `createdAt`; at least 1 ms so the store accepts it. */
 const remainingMs = (createdAt: number, now: number) => Math.max(1, createdAt + JOB_TTL_MS - now);
 
@@ -73,10 +84,17 @@ export function upstashJobStore(redis: Redis, now: () => number = Date.now): Job
       await redis.del(requestKey(installId, requestId));
     },
     async lock(id) {
-      return (await redis.set(lockKey(id), '1', { nx: true, px: JOB_LOCK_MS })) === 'OK';
+      const token = newToken();
+      return (await redis.set(lockKey(id), token, { nx: true, px: JOB_LOCK_MS })) === 'OK' ? token : null;
     },
-    async unlock(id) {
-      await redis.del(lockKey(id));
+    async unlock(id, token) {
+      await redis.eval(UNLOCK_SCRIPT, [lockKey(id)], [token]);
+    },
+    async requestCancel(id, createdAt) {
+      await redis.set(cancelKey(id), '1', { px: remainingMs(createdAt, now()) });
+    },
+    async isCancelRequested(id) {
+      return (await redis.get(cancelKey(id))) != null;
     },
   };
 }
@@ -118,12 +136,19 @@ export function memoryJobStore(now: () => number = Date.now): JobStore {
       values.delete(requestKey(installId, requestId));
     },
     async lock(id) {
-      if (read(lockKey(id))) return false;
-      write(lockKey(id), true, JOB_LOCK_MS);
-      return true;
+      if (read(lockKey(id))) return null;
+      const token = newToken();
+      write(lockKey(id), token, JOB_LOCK_MS);
+      return token;
     },
-    async unlock(id) {
-      values.delete(lockKey(id));
+    async unlock(id, token) {
+      if (read(lockKey(id)) === token) values.delete(lockKey(id));
+    },
+    async requestCancel(id, createdAt) {
+      write(cancelKey(id), true, remainingMs(createdAt, now()));
+    },
+    async isCancelRequested(id) {
+      return read(cancelKey(id)) != null;
     },
   };
 }

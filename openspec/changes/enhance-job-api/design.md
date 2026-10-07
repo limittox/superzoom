@@ -54,19 +54,26 @@ Each `GET /api/enhance/{id}` **advances** the job before answering:
 - **In development**, the memory job store, and the rate limiter's memory store, live on `globalThis`, so the submit route and the job route share them.
 - *Alternative:* encode the job state in a signed token the app sends back. That avoids storage, but cancellation and idempotency both need server-side state anyway.
 
-### 3. One advance at a time per job
-Overlapping polls (a pause-and-resume race, or two screens) could submit pass 2 twice. `advance` takes `lock(job:{id}:lock)`: `SET NX PX 15000`, released afterwards. A poll that doesn't get the lock answers from the record as stored, without advancing. Cancel takes the same lock.
+### 3. One change at a time per job
+Overlapping requests (a pause-and-resume race, two screens, or a cancel during a status check) could otherwise queue pass 2 twice or resurrect a cancelled job.
+- **The lock:** every change to an active job happens under `job:{id}:lock`, taken with `SET NX PX 60000` and an owner token. It's released with a compare-and-delete script, so an expired lock that someone else has since taken is never released by the old holder.
+- **Bounded fal calls:** each fal call in an advance gives up after 15 s, so an advance always ends inside the lock. A slow result fetch is retried on the next poll.
+- **Polls without the lock** answer from the stored record without advancing.
+- **Cancel:** `DELETE` first sets `job:{id}:cancel`, then waits for the lock (at most its lifetime) and cancels. A status check holding the lock checks the flag before and after asking fal. If set, it cancels whatever pass is active, including one it just queued, and saves the job as cancelled.
+- **Failed saves:** if saving a job with a newly queued pass fails, that pass is cancelled, because its handle would otherwise be lost.
 
 ### 4. Submit order and idempotency
 `POST` runs in this order:
 1. Validate the install ID, client request ID (a UUID), body, mode and image.
 2. Look up `jobreq:` and return the existing job ID if found. A repeat doesn't count against the rate limit.
 3. Rate limit.
-4. Create the job record and `claimRequest` (`SET NX`). If another identical submit won the race, return its job ID; this one has already used a rate-limit slot, which is rare and acceptable.
-5. Upload to fal and submit pass 1.
-6. Store the fal request ID and respond `202 { jobId }`.
+4. Save the job record (`queued`, no provider handle yet) **before** `claimRequest` (`SET NX`). A resubmission during the upload gets this ID, and its polls must find the job: it reports `queued` until the upload finishes. If another identical submit won the claim, return its job ID; this one has already used a rate-limit slot, which is rare and acceptable.
+5. Under the job's lock, upload to fal and submit pass 1.
+6. Store the fal request ID (or cancel at once if a cancel arrived meanwhile) and respond `202 { jobId }`.
 
-If step 5 fails (`provider_error`, or `image_too_small` from the model's input limits), the error is returned from the `POST` itself, no job record is kept, and the claim is released, so the app's Retry can submit again with the same request ID.
+A job whose submission never finished (for example, the server stopped mid-upload) times out 120 s after creation. A pass's 120 s start when fal accepts it, not before the upload or status check that led to it.
+
+If step 5 fails (`provider_error`, or `image_too_small` from the model's input limits), the error is returned from the `POST` itself, the job is saved as failed for anyone polling it, and the claim is released, so the app's Retry can submit again with the same request ID.
 
 ### 5. API shape (`src/shared/enhance.ts`)
 - **`POST /api/enhance`** (multipart: `image`, `mode`, `requestId`; header `X-Install-Id`) → `202 { jobId }`, or the existing error JSON.
@@ -90,9 +97,10 @@ The fal implementation keeps `MODEL_TABLE`, `planForModel` and `planPasses`. `bu
   - `queued`;
   - `processing` (pass 1 of 1, or pass 1 of 2);
   - `finishing` (pass 2 of 2).
-- **Network failures while polling:** keep retrying. After 30 s without a successful poll, fail with `network`, keeping the `jobId` in the session. Retry then resumes polling the same job; it submits again only if the job is gone (`job_not_found`), failed or was cancelled.
+- **Network failures while polling:** keep retrying. Each status check gives up after 15 s. Returning to the foreground restarts the 30 s allowance and replaces a check that stalled while the app was away. After 30 s of foreground time without a successful poll, fail with `network`.
+- **Retry:** a network failure keeps the `jobId` and the submission's `requestId` in the session. Retry resumes the job, or resubmits with the same `requestId` (the service returns the job if it created one). It starts a new submission only after a definite outcome: the job is gone (`job_not_found`), failed or was cancelled.
 - **`done`:** download the result as today. `failed` maps the error code to the existing messages.
-- **`cancel()`:** abort locally, send `DELETE` (fire-and-forget), and drop late results, using the existing request-ID guards in `session.ts`. Leaving the result screen already calls `cancel()`.
+- **`cancel()`:** abort locally, send `DELETE` (fire-and-forget), and drop late results, using the existing request-ID guards in `session.ts`. Leaving the result screen already calls `cancel()`. A job kept after a network failure is cancelled too, when the user leaves, switches to another mode's result or starts another mode.
 - **Cancel during upload** (found in device testing): the upload request isn't aborted. The service queues the job even if the app hangs up, so aborting would leave it running with no ID to cancel it. Instead, the app waits for the job ID in the background and then cancels the job.
 - *Why 2 s:* about 30 polls for a 60 s job. Cheap in Redis commands and fal status calls, and responsive enough.
 

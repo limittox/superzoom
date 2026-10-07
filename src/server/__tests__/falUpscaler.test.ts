@@ -8,6 +8,7 @@ import {
   createDefaultFalUpscaler,
   createFalUpscaler,
   describeProviderError,
+  FAL_CALL_TIMEOUT_MS,
   MODEL_TABLE,
   planForModel,
   planPasses,
@@ -25,28 +26,38 @@ function fakeFal() {
     queue: {
       submit: jest.fn(async () => ({ request_id: `fal-${++submitted}`, status: 'IN_QUEUE' })),
       status: jest.fn(async (): Promise<{ status: string }> => ({ status: 'COMPLETED' })),
-      result: jest.fn(
-        async (): Promise<{ data: unknown; requestId: string }> => ({
-          data: { image: { url: 'https://fal.media/out.jpg' } },
-          requestId: 'x',
-        }),
-      ),
+      result: jest.fn(async (): Promise<{ data: unknown; requestId: string }> => ({
+        data: { image: { url: 'https://fal.media/out.jpg' } },
+        requestId: 'x',
+      })),
       cancel: jest.fn().mockResolvedValue(undefined),
     },
   };
 }
 
 const image = new Blob([new Uint8Array([0xff, 0xd8, 0xff])], { type: 'image/jpeg' });
+
+/** The upscalers' clock; `at(t, fn)` runs `fn` with the clock set to `t`. */
+const clock = { now: 1_000_000 };
+beforeEach(() => {
+  clock.now = 1_000_000;
+});
+const at = <T>(time: number, fn: () => T): T => {
+  clock.now = time;
+  return fn();
+};
+const upscalerFor = (fal: ReturnType<typeof fakeFal>, onProviderError?: (err: unknown) => void) =>
+  createFalUpscaler(fal as never, onProviderError, () => clock.now);
 const start = (mode: Mode, width = 1000, height = 1000) => ({ image, width, height, mode });
 
 /** A job record as the submit route stores it after `start`. */
 async function startedJob(fal: ReturnType<typeof fakeFal>, mode: Mode, width = 1000, height = 1000) {
-  const started = await createFalUpscaler(fal as never).start(start(mode, width, height));
+  const started = await upscalerFor(fal).start(start(mode, width, height));
   const job: JobRecord = {
     id: 'job-1',
     installId: 'install-123',
     mode,
-    createdAt: started.passQueuedAt!,
+    createdAt: clock.now,
     status: 'queued',
     passIndex: 0,
     ...started,
@@ -61,7 +72,7 @@ describe('fal upscaler: start', () => {
     ['creative', 'fal-ai/clarity-upscaler'],
   ] as const)('%s mode uploads and queues pass 1 on %s with the chosen factor', async (mode, endpoint) => {
     const fal = fakeFal();
-    const started = await createFalUpscaler(fal as never).start(start(mode, 2000, 1500));
+    const started = await upscalerFor(fal).start(start(mode, 2000, 1500));
 
     expect(fal.storage.upload).toHaveBeenCalledWith(image, { lifecycle: { expiresIn: '1h' } });
     expect(fal.queue.submit).toHaveBeenCalledTimes(1);
@@ -72,7 +83,11 @@ describe('fal upscaler: start', () => {
     expect(options.storageSettings).toEqual({ expiresIn: '1h' });
     // fal drops a pass that never starts, even if no one polls again.
     expect(options.startTimeout).toBe(LIMITS.providerTimeoutMs / 1000);
-    expect(started).toMatchObject({ providerRequestId: 'fal-1', sourceUrl: 'https://fal.media/in.jpg', passes: [expect.any(Number)] });
+    expect(started).toMatchObject({
+      providerRequestId: 'fal-1',
+      sourceUrl: 'https://fal.media/in.jpg',
+      passes: [expect.any(Number)],
+    });
   });
 
   it('plans factor 4 for a 1 MP crop', async () => {
@@ -89,7 +104,9 @@ describe('fal upscaler: start', () => {
     const failure = Object.assign(new Error('Unauthorized: key abc123 invalid'), { status: 401 });
     fal.queue.submit.mockRejectedValueOnce(failure);
     const onProviderError = jest.fn();
-    const error = await createFalUpscaler(fal as never, onProviderError).start(start('pro')).catch((e: unknown) => e);
+    const error = await upscalerFor(fal, onProviderError)
+      .start(start('pro'))
+      .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ code: 'provider_error' });
     expect((error as Error).message).not.toContain('abc123');
@@ -107,12 +124,12 @@ describe('fal upscaler: advance', () => {
   it('reports a pass waiting in the queue as queued, and a running one as processing', async () => {
     const fal = fakeFal();
     const job = await startedJob(fal, 'enhance');
-    const upscaler = createFalUpscaler(fal as never);
+    const upscaler = upscalerFor(fal);
 
     fal.queue.status.mockResolvedValueOnce({ status: 'IN_QUEUE' });
-    expect(await upscaler.advance(job, job.passQueuedAt! + 1000)).toMatchObject({ status: 'queued' });
+    expect(await at(job.passQueuedAt! + 1000, () => upscaler.advance(job))).toMatchObject({ status: 'queued' });
     fal.queue.status.mockResolvedValueOnce({ status: 'IN_PROGRESS' });
-    expect(await upscaler.advance(job, job.passQueuedAt! + 2000)).toMatchObject({ status: 'processing' });
+    expect(await at(job.passQueuedAt! + 2000, () => upscaler.advance(job))).toMatchObject({ status: 'processing' });
     expect(fal.queue.status).toHaveBeenCalledWith('fal-ai/seedvr/upscale/image', { requestId: 'fal-1' });
     expect(fal.queue.result).not.toHaveBeenCalled();
   });
@@ -120,7 +137,7 @@ describe('fal upscaler: advance', () => {
   it('finishes a single-pass job with planned dimensions when fal omits them', async () => {
     const fal = fakeFal();
     const job = await startedJob(fal, 'enhance');
-    const next = await createFalUpscaler(fal as never).advance(job);
+    const next = await upscalerFor(fal).advance(job);
     expect(next).toMatchObject({
       status: 'done',
       result: { url: 'https://fal.media/out.jpg', width: 4000, height: 4000, mode: 'enhance' },
@@ -134,7 +151,7 @@ describe('fal upscaler: advance', () => {
       data: { image: { url: 'https://fal.media/out.jpg', width: 3998, height: 3998 } },
       requestId: 'x',
     });
-    const next = await createFalUpscaler(fal as never).advance(await startedJob(fal, 'creative'));
+    const next = await upscalerFor(fal).advance(await startedJob(fal, 'creative'));
     expect(next.result).toMatchObject({ width: 3998, height: 3998 });
   });
 
@@ -143,7 +160,7 @@ describe('fal upscaler: advance', () => {
     const job = await startedJob(fal, 'pro');
     fal.queue.result.mockRejectedValueOnce(new Error('Unprocessable Entity'));
     const onProviderError = jest.fn();
-    const next = await createFalUpscaler(fal as never, onProviderError).advance(job);
+    const next = await upscalerFor(fal, onProviderError).advance(job);
     expect(next).toMatchObject({ status: 'failed', error: { code: 'provider_error' } });
     expect(onProviderError).toHaveBeenCalled();
   });
@@ -152,7 +169,7 @@ describe('fal upscaler: advance', () => {
     const fal = fakeFal();
     const job = await startedJob(fal, 'enhance');
     fal.queue.result.mockResolvedValueOnce({ data: {}, requestId: 'x' });
-    expect(await createFalUpscaler(fal as never).advance(job)).toMatchObject({
+    expect(await upscalerFor(fal).advance(job)).toMatchObject({
       status: 'failed',
       error: { code: 'provider_error' },
     });
@@ -162,10 +179,12 @@ describe('fal upscaler: advance', () => {
     const fal = fakeFal();
     const job = await startedJob(fal, 'creative');
     fal.queue.status.mockResolvedValue({ status: 'IN_QUEUE' });
-    const upscaler = createFalUpscaler(fal as never);
+    const upscaler = upscalerFor(fal);
 
-    expect(await upscaler.advance(job, job.passQueuedAt! + LIMITS.providerTimeoutMs)).toMatchObject({ status: 'queued' });
-    const next = await upscaler.advance(job, job.passQueuedAt! + LIMITS.providerTimeoutMs + 1);
+    expect(await at(job.passQueuedAt! + LIMITS.providerTimeoutMs, () => upscaler.advance(job))).toMatchObject({
+      status: 'queued',
+    });
+    const next = await at(job.passQueuedAt! + LIMITS.providerTimeoutMs + 1, () => upscaler.advance(job));
     expect(next).toMatchObject({ status: 'failed', error: { code: 'timeout' } });
     expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/clarity-upscaler', { requestId: 'fal-1' });
   });
@@ -174,9 +193,9 @@ describe('fal upscaler: advance', () => {
     const fal = fakeFal();
     const job = await startedJob(fal, 'enhance');
     fal.queue.status.mockRejectedValue(new Error('network'));
-    const upscaler = createFalUpscaler(fal as never);
-    expect(await upscaler.advance(job, job.passQueuedAt! + 5000)).toEqual(job);
-    expect(await upscaler.advance(job, job.passQueuedAt! + LIMITS.providerTimeoutMs + 1)).toMatchObject({
+    const upscaler = upscalerFor(fal);
+    expect(await at(job.passQueuedAt! + 5000, () => upscaler.advance(job))).toEqual(job);
+    expect(await at(job.passQueuedAt! + LIMITS.providerTimeoutMs + 1, () => upscaler.advance(job))).toMatchObject({
       status: 'failed',
       error: { code: 'timeout' },
     });
@@ -185,8 +204,68 @@ describe('fal upscaler: advance', () => {
   it('leaves finished jobs alone', async () => {
     const fal = fakeFal();
     const job: JobRecord = { ...(await startedJob(fal, 'enhance')), status: 'cancelled' };
-    expect(await createFalUpscaler(fal as never).advance(job)).toBe(job);
+    expect(await upscalerFor(fal).advance(job)).toBe(job);
     expect(fal.queue.status).not.toHaveBeenCalled();
+  });
+});
+
+describe('fal upscaler: timing and slow calls', () => {
+  it("starts a pass's time when fal accepts it, not before the upload", async () => {
+    const fal = fakeFal();
+    fal.storage.upload.mockImplementationOnce(async () => {
+      clock.now += 90_000; // a slow upload
+      return 'https://fal.media/in.jpg';
+    });
+    const started = await upscalerFor(fal).start(start('pro'));
+    expect(started.passQueuedAt).toBe(1_000_000 + 90_000);
+  });
+
+  it("starts pass 2's time when it is queued, after a slow result fetch", async () => {
+    const fal = fakeFal();
+    const job = await startedJob(fal, 'pro', 128, 275);
+    fal.queue.result.mockImplementationOnce(async () => {
+      clock.now += 30_000;
+      return { data: { image: { url: 'https://fal.media/pass1.jpg' } }, requestId: 'x' };
+    });
+    const next = await upscalerFor(fal).advance(job);
+    expect(next.passQueuedAt).toBe(1_000_000 + 30_000);
+  });
+
+  it('reports a job still being submitted as it is, and times it out after 120 s', async () => {
+    const fal = fakeFal();
+    const submitting: JobRecord = {
+      id: 'job-1',
+      installId: 'i',
+      mode: 'pro',
+      createdAt: 1_000_000,
+      status: 'queued',
+      passes: [],
+      outputWidth: 0,
+      outputHeight: 0,
+      passIndex: 0,
+    };
+    expect(await at(1_000_000 + 5000, () => upscalerFor(fal).advance(submitting))).toBe(submitting);
+    expect(
+      await at(1_000_000 + LIMITS.providerTimeoutMs + 1, () => upscalerFor(fal).advance(submitting)),
+    ).toMatchObject({
+      status: 'failed',
+      error: { code: 'timeout' },
+    });
+    expect(fal.queue.status).not.toHaveBeenCalled();
+  });
+
+  it('gives up on a fal call that hangs, keeping the job for the next check', async () => {
+    jest.useFakeTimers();
+    try {
+      const fal = fakeFal();
+      const job = await startedJob(fal, 'enhance');
+      fal.queue.result.mockReturnValueOnce(new Promise(() => {}));
+      const pending = upscalerFor(fal).advance(job);
+      await jest.advanceTimersByTimeAsync(FAL_CALL_TIMEOUT_MS);
+      expect(await pending).toEqual(job);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -195,14 +274,14 @@ describe('fal upscaler: cancel', () => {
     const fal = fakeFal();
     const job = await startedJob(fal, 'pro');
     fal.queue.cancel.mockRejectedValueOnce(new Error('already running'));
-    await expect(createFalUpscaler(fal as never).cancel(job)).resolves.toBeUndefined();
+    await expect(upscalerFor(fal).cancel(job)).resolves.toBeUndefined();
     expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
   });
 
   it('does nothing for a finished job', async () => {
     const fal = fakeFal();
     const job: JobRecord = { ...(await startedJob(fal, 'pro')), status: 'done' };
-    await createFalUpscaler(fal as never).cancel(job);
+    await upscalerFor(fal).cancel(job);
     expect(fal.queue.cancel).not.toHaveBeenCalled();
   });
 });
@@ -243,15 +322,25 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
     const fal = fakeFal();
     const job = await startedJob(fal, 'enhance', 128, 275);
     expect(job.passes).toHaveLength(1);
-    expect((fal.queue.submit.mock.calls[0] as unknown as [string, Record<string, any>])[1].input.upscale_factor).toBeCloseTo(1920 / 275, 6);
-    const next = await createFalUpscaler(fal as never).advance(job);
+    expect(
+      (fal.queue.submit.mock.calls[0] as unknown as [string, Record<string, any>])[1].input.upscale_factor,
+    ).toBeCloseTo(1920 / 275, 6);
+    const next = await upscalerFor(fal).advance(job);
     expect(next.result).toEqual({ url: 'https://fal.media/out.jpg', width: 893, height: 1920, mode: 'enhance' });
   });
 
   it('caps SeedVR2 only for inputs under 256 px on the short side', () => {
     // fal: "Both dimensions must be at least 256 pixels when the output exceeds 1080p".
-    expect(planForModel(MODEL_TABLE.enhance, 128, 275)).toEqual({ factor: 1920 / 275, outputWidth: 893, outputHeight: 1920 });
-    expect(planForModel(MODEL_TABLE.enhance, 275, 128)).toEqual({ factor: 1920 / 275, outputWidth: 1920, outputHeight: 893 });
+    expect(planForModel(MODEL_TABLE.enhance, 128, 275)).toEqual({
+      factor: 1920 / 275,
+      outputWidth: 893,
+      outputHeight: 1920,
+    });
+    expect(planForModel(MODEL_TABLE.enhance, 275, 128)).toEqual({
+      factor: 1920 / 275,
+      outputWidth: 1920,
+      outputHeight: 893,
+    });
     expect(planForModel(MODEL_TABLE.enhance, 256, 550).factor).toBe(10);
     expect(planForModel(MODEL_TABLE.enhance, 1000, 1000).factor).toBe(4);
     expect(planForModel(MODEL_TABLE.pro, 128, 275).factor).toBe(10);
@@ -265,7 +354,7 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
     expect(planForModel(MODEL_TABLE.pro, 255, 5000).factor).toBeGreaterThanOrEqual(2);
 
     const fal = fakeFal();
-    await expect(createFalUpscaler(fal as never).start(start('enhance', 255, 5000))).rejects.toMatchObject({
+    await expect(upscalerFor(fal).start(start('enhance', 255, 5000))).rejects.toMatchObject({
       code: 'image_too_small',
     });
     expect(fal.storage.upload).not.toHaveBeenCalled();
@@ -277,11 +366,11 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
     fal.queue.result
       .mockResolvedValueOnce({ data: { image: { url: 'https://fal.media/pass1.jpg' } }, requestId: 'x' })
       .mockResolvedValueOnce({ data: { image: { url: 'https://fal.media/pass2.jpg' } }, requestId: 'x' });
-    const upscaler = createFalUpscaler(fal as never);
+    const upscaler = upscalerFor(fal);
     const job = await startedJob(fal, mode, 128, 275);
     expect(job.passes).toEqual([4, 2.5]);
 
-    const afterPass1 = await upscaler.advance(job, 5000 + job.passQueuedAt!);
+    const afterPass1 = await at(5000 + job.passQueuedAt!, () => upscaler.advance(job));
     expect(afterPass1).toMatchObject({
       status: 'processing',
       passIndex: 1,
@@ -299,19 +388,25 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
 
     const done = await upscaler.advance(afterPass1);
     expect(fal.queue.status).toHaveBeenLastCalledWith(MODEL_TABLE[mode].endpoint, { requestId: 'fal-2' });
-    expect(done).toMatchObject({ status: 'done', result: { url: 'https://fal.media/pass2.jpg', width: 1280, height: 2750, mode } });
+    expect(done).toMatchObject({
+      status: 'done',
+      result: { url: 'https://fal.media/pass2.jpg', width: 1280, height: 2750, mode },
+    });
   });
 
   it('times out pass 2 from when it was queued, not from when the job started', async () => {
     const fal = fakeFal();
-    const upscaler = createFalUpscaler(fal as never);
+    const upscaler = upscalerFor(fal);
     const job = await startedJob(fal, 'pro', 128, 275);
     // The app was in the background for 5 minutes after pass 1 finished.
     const resumedAt = job.passQueuedAt! + 300_000;
-    const afterPass1 = await upscaler.advance(job, resumedAt);
+    const afterPass1 = await at(resumedAt, () => upscaler.advance(job));
     fal.queue.status.mockResolvedValue({ status: 'IN_PROGRESS' });
-    expect(await upscaler.advance(afterPass1, resumedAt + 60_000)).toMatchObject({ status: 'processing', passIndex: 1 });
-    expect(await upscaler.advance(afterPass1, resumedAt + LIMITS.providerTimeoutMs + 1)).toMatchObject({
+    expect(await at(resumedAt + 60_000, () => upscaler.advance(afterPass1))).toMatchObject({
+      status: 'processing',
+      passIndex: 1,
+    });
+    expect(await at(resumedAt + LIMITS.providerTimeoutMs + 1, () => upscaler.advance(afterPass1))).toMatchObject({
       status: 'failed',
       error: { code: 'timeout' },
     });
@@ -322,7 +417,7 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
     const fal = fakeFal();
     const job = await startedJob(fal, 'pro', 128, 275);
     fal.queue.submit.mockRejectedValueOnce(new Error('pass 2 failed'));
-    expect(await createFalUpscaler(fal as never).advance(job)).toMatchObject({
+    expect(await upscalerFor(fal).advance(job)).toMatchObject({
       status: 'failed',
       error: { code: 'provider_error' },
     });

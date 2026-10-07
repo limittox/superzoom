@@ -92,7 +92,7 @@ An unknown or expired job, or another install's, gets `404 job_not_found`.
 **How jobs run.**
 - **Nothing runs between requests.** Each `GET` moves the job along: it checks the active pass on fal, starts the second pass when the first one finishes, finishes the job, or times out a pass. That's why it works the same on the dev server and on EAS Hosting, with no webhooks.
 - **While nobody asks (the app in the background), a two-pass job waits between passes** and continues on the next `GET`.
-- **Overlapping checks don't duplicate a pass.** A per-job lock in the store lets only one advance at a time; the others report the stored state.
+- **Overlapping requests don't duplicate a pass or undo a cancel.** Every change to an active job happens under a per-job lock with an owner token (60 s, longer than any advance, whose fal calls each give up after 15 s); other checks report the stored state. A cancel that arrives during a check is recorded as a flag that the check acts on before saving.
 - **A dropped connection or the app going to the background doesn't cancel anything.** Only `DELETE` and timeouts stop fal work.
 - **Records expire one hour after submission,** the same as fal's stored files. Job records (`job:{id}` in Upstash, in memory during development) hold the job's state and fal URLs, never image data.
 

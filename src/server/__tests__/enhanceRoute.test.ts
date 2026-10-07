@@ -44,6 +44,10 @@ function fakeRedis() {
       return 'OK';
     }),
     del: jest.fn(async (key: string) => (values.delete(key) ? 1 : 0)),
+    // The compare-and-delete unlock script.
+    eval: jest.fn(async (_script: string, [key]: string[], [token]: string[]) =>
+      values.get(key) === token ? (values.delete(key), 1) : 0,
+    ),
   };
 }
 

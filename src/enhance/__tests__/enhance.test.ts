@@ -5,7 +5,7 @@ import { File } from 'expo-file-system';
 
 import { cancelJob, downloadResult, EnhanceRequestError, enhanceUrl, getJob, submitJob } from '../client';
 import { ALL_FAILURE_CODES, failureMessage } from '../messages';
-import { createEnhancementRunner, type Foreground, type JobApi, phaseOf } from '../runner';
+import { createEnhancementRunner, type Foreground, type JobApi, phaseOf, POLL_TIMEOUT_MS } from '../runner';
 
 jest.mock('expo-file-system', () => {
   const files = new Map<string, { uri: string; exists: boolean; delete: jest.Mock }>();
@@ -357,8 +357,9 @@ describe('enhancement runner', () => {
     expect(useSession.getState().request).toEqual({
       status: 'error',
       mode: 'pro',
-      error: { code: 'network', message: 'offline' },
+      error: { code: 'network', message: expect.stringMatching(/reach the enhancement server/) },
       jobId: 'job-1',
+      requestId: 'req-1',
     });
 
     api.get.mockReset().mockResolvedValue(done());
@@ -449,6 +450,93 @@ describe('enhancement runner', () => {
     await runner.start('creative');
     expect(api.cancel).toHaveBeenCalledWith('job-1');
     expect(useSession.getState().results).toEqual({ creative: img('https://fal.media/fresh.jpg', 4000, 4000) });
+  });
+
+  /** A status check that, like fetch, only ends when its signal aborts. */
+  const hangingGet = (_jobId: string, signal: AbortSignal) =>
+    new Promise<Status>((_, reject) => signal.addEventListener('abort', () => reject(new EnhanceRequestError({ code: 'cancelled', message: 'aborted' }))));
+
+  it('replaces a check that stalled while the app was away as soon as it returns, without failing', async () => {
+    const { app, api, runner } = setup([status({ status: 'processing', pass: 1, passes: 1 })]);
+    api.get.mockImplementationOnce(hangingGet);
+    void runner.start('pro');
+    await flush();
+    expect(api.get).toHaveBeenCalledTimes(1);
+
+    app.background();
+    await jest.advanceTimersByTimeAsync(10_000);
+    app.resume();
+    await flush();
+    // The stalled check was abandoned and a new one sent at once; nothing failed.
+    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(useSession.getState().request).toMatchObject({ status: 'pending' });
+    runner.cancel();
+  });
+
+  it("doesn't fail on return when a check that started before the app left fails afterwards", async () => {
+    const { app, api, runner } = setup([status({ status: 'processing', pass: 1, passes: 1 })]);
+    let rejectCheck!: (err: Error) => void;
+    api.get.mockImplementationOnce(() => new Promise<Status>((_, reject) => (rejectCheck = reject)));
+    void runner.start('pro');
+    await flush();
+    app.background();
+    await jest.advanceTimersByTimeAsync(60_000);
+    // The network error lands just as the app comes back.
+    rejectCheck(networkError());
+    app.resume();
+    await flush();
+    expect(useSession.getState().request).toMatchObject({ status: 'pending' });
+    runner.cancel();
+  });
+
+  it('gives up on a check that stalls in the foreground and fails with network after the grace period', async () => {
+    const { api, runner } = setup();
+    api.get.mockImplementation(hangingGet);
+    void runner.start('pro');
+    await flush();
+    await jest.advanceTimersByTimeAsync(POLL_TIMEOUT_MS + POLL);
+    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(useSession.getState().request).toMatchObject({ status: 'pending' });
+    await jest.advanceTimersByTimeAsync(GRACE);
+    await flush();
+    expect(useSession.getState().request).toMatchObject({ status: 'error', error: { code: 'network' }, jobId: 'job-1' });
+  });
+
+  it('resubmits with the same request ID on Retry after a submission failed in the foreground', async () => {
+    const { api, runner } = setup();
+    api.submit.mockRejectedValueOnce(networkError());
+    await runner.start('pro');
+    expect(useSession.getState().request).toMatchObject({ status: 'error', requestId: 'req-1' });
+    await runner.start('pro');
+    expect(api.submit.mock.calls.map((c) => c[2])).toEqual(['req-1', 'req-1']);
+    expect(useSession.getState().results.pro).toBeDefined();
+  });
+
+  it('cancels a job kept after a network failure when the user leaves or picks another mode', async () => {
+    const { api, runner } = setup([networkError()]);
+    void runner.start('pro');
+    await flush();
+    await jest.advanceTimersByTimeAsync(GRACE + POLL);
+    await flush();
+    expect(useSession.getState().request).toMatchObject({ status: 'error', jobId: 'job-1' });
+
+    // Leaving the result screen.
+    runner.cancel();
+    expect(api.cancel).toHaveBeenCalledWith('job-1');
+    expect(useSession.getState().request).toEqual({ status: 'idle' });
+  });
+
+  it('cancels a job kept after a network failure when another mode starts', async () => {
+    const { api, runner } = setup([networkError()]);
+    void runner.start('pro');
+    await flush();
+    await jest.advanceTimersByTimeAsync(GRACE + POLL);
+    await flush();
+    api.submit.mockResolvedValueOnce('job-2');
+    api.get.mockReset().mockResolvedValue(done());
+    await runner.start('creative');
+    expect(api.cancel).toHaveBeenCalledWith('job-1');
+    expect(api.submit.mock.calls.at(-1)![2]).toBe('req-2');
   });
 
   it('records failures reported by the job', async () => {
