@@ -26,7 +26,7 @@
 
 - [x] 5.1 Build a new Android development build (`npx eas-cli@latest build --profile development --platform android`) and install it; verify it launches and connects to the dev server
 - [x] 5.2 On the user's Samsung in good light: verify presets read 0.6x/1x/3x/5x, the zoom indicator shows 5x as optical and 6x+ as AI zoom, and `[lens-check]` logs ≈7.9 mm at 3x and ≈18.6 mm at 5x; record results in `docs/device-test-matrix.md`
-- [ ] 5.3 Verify a 12x capture is taken at 5x hardware zoom and center-cropped to the preview framing, and that forcing `getLensGeometry` to return `null` (temporary dev toggle) restores the 1x cap with working capture; record results in `docs/device-test-matrix.md`
+- [x] 5.3 Verify a 12x capture is taken at 5x hardware zoom and center-cropped to the preview framing, and that forcing `getLensGeometry` to return `null` (temporary dev toggle) restores the 1x cap with working capture; record results in `docs/device-test-matrix.md` (done with a 10x capture; the on-device `null` toggle was skipped at the user's request since unit tests cover the fallback)
 - [x] 5.4 Run `npm test`, `npm run lint` and `npm run typecheck`, then update `docs/backend.md`/README only if commands changed and add a note to `add-zoom-camera-mvp/design.md` decision 3 pointing to this change; verify all checks pass
 
 ## Workflow follow-up

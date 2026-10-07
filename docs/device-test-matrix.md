@@ -85,5 +85,5 @@ Device: user's Samsung (Back Quad Camera, lenses 0.6x/1x/3x/5x), Android dev bui
 | Zoom indicator optical up to 5x, AI zoom above | ✅ confirmed by the user |
 | Pinch to ~5x | ⚠️ a pinch ending just below 5x (e.g. 4.96x, shown as "5x") stays on the 3x lens. Fixed with lens detents: a pinch ending within 6% of a lens settles exactly on it |
 | 5x lens choice by scene | ✅ far subject in good light → 18.6 mm (5x lens) at 5x, 5.7x and 10x, whether reached by preset or pinch. Close or dim subjects → 7.9 mm (3x lens crop) even at exactly 5.00x hardware zoom: the phone's own choice, flagged by the dev lens check |
-| 10x capture (max preset): 5x hardware zoom + center crop | ✅ EXIF 18.6 mm → 5x lens with 2x digital crop; framing match vs preview ⏳ user to confirm |
-| Forced `null` lens geometry → 1x cap, capture works | ✅ covered by unit tests (`useLensFactors`, `analyzeLenses` fallback); on-device toggle not run |
+| 10x capture (max preset): 5x hardware zoom + center crop | ✅ EXIF 18.6 mm → 5x lens with 2x digital crop; saved crop matched the preview framing (confirmed by the user) |
+| Forced `null` lens geometry → 1x cap, capture works | ✅ covered by unit tests (`useLensFactors`, `analyzeLenses` fallback); on-device toggle skipped at the user's request (2026-10-07) |
