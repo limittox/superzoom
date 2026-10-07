@@ -12,7 +12,12 @@ jest.mock('expo-file-system', () => {
   const File = jest.fn((dirOrUri: unknown, name?: string) => {
     const uri = name ? `file:///cache/${name}` : String(dirOrUri);
     if (!files.has(uri)) {
-      const entry = { uri, exists: false, delete: jest.fn(() => void (entry.exists = false)) };
+      // Like the real File, the fake is a Blob, so FormData accepts it.
+      const entry = Object.assign(new Blob([new Uint8Array([0xff, 0xd8, 0xff])], { type: 'image/jpeg' }), {
+        uri,
+        exists: false,
+        delete: jest.fn(() => void (entry.exists = false)),
+      });
       files.set(uri, entry);
     }
     return files.get(uri);
@@ -85,6 +90,8 @@ describe('requestEnhancement', () => {
     expect(url).toBe('/api/enhance');
     expect(init.method).toBe('POST');
     expect(init.headers).toEqual({ 'X-Install-Id': 'install-123' });
+    // The image part is an expo-file-system File for the upload copy, not a { uri } descriptor.
+    expect(File).toHaveBeenCalledWith('file:///up.jpg');
   });
 
   it('maps a server error body to its code and message', async () => {

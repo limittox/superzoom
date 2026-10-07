@@ -60,7 +60,21 @@ function rejectOnAbort(signal: AbortSignal): Promise<never> {
   });
 }
 
-export function createFalUpscaler(client: FalLike): Upscaler {
+/** Short, log-safe description of a fal client error (status, message, response body). */
+export function describeProviderError(err: unknown, secrets: string[] = []): string {
+  const e = err as { status?: unknown; message?: unknown; body?: unknown };
+  const parts = [
+    typeof e?.status === 'number' ? `status ${e.status}` : null,
+    e?.message ? String(e.message) : String(err),
+    e?.body !== undefined ? JSON.stringify(e.body) : null,
+  ].filter(Boolean);
+  // Redact before truncating, so a key that straddles the cut can't leave its prefix behind.
+  let text = parts.join(' | ');
+  for (const secret of secrets) if (secret) text = text.split(secret).join('<redacted>');
+  return text.slice(0, 500);
+}
+
+export function createFalUpscaler(client: FalLike, onProviderError?: (err: unknown) => void): Upscaler {
   return {
     async upscale({ image, width, height, mode, signal }: UpscaleRequest): Promise<UpscaleResult> {
       const spec = MODEL_TABLE[mode];
@@ -92,6 +106,7 @@ export function createFalUpscaler(client: FalLike): Upscaler {
       } catch (err) {
         if (err instanceof ApiError) throw err;
         if (signal.aborted) throw timeoutError();
+        onProviderError?.(err);
         throw providerError();
       }
     },
@@ -99,5 +114,11 @@ export function createFalUpscaler(client: FalLike): Upscaler {
 }
 
 export function createDefaultFalUpscaler(apiKey: string): Upscaler {
-  return createFalUpscaler(createFalClient({ credentials: apiKey }));
+  // Outside production, log why fal failed (e.g. "Exhausted balance"); the client only ever
+  // sees a generic provider_error, and the key is scrubbed from the log line.
+  const logError =
+    process.env.NODE_ENV === 'production'
+      ? undefined
+      : (err: unknown) => console.warn(`[fal] provider error: ${describeProviderError(err, [apiKey])}`);
+  return createFalUpscaler(createFalClient({ credentials: apiKey }), logError);
 }

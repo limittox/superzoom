@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Camera, type CameraRef, useCameraPermission } from 'react-native-vision-camera';
 import { scheduleOnRN } from 'react-native-worklets';
 
+import { handleCameraError } from '@/camera/cameraErrors';
 import { useZoomCamera } from '@/camera/useZoomCamera';
 import { ModePicker } from '@/components/ModePicker';
 import { PermissionScreen } from '@/components/PermissionScreen';
@@ -185,6 +186,7 @@ function ZoomCamera() {
               isActive={isActive}
               outputs={[photoOutput]}
               zoom={deviceZoom as SharedValue<number>}
+              onError={handleCameraError}
               resizeMode="cover"
             />
           </Animated.View>

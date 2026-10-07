@@ -1,7 +1,7 @@
 import { createFalClient } from '@fal-ai/client';
 
 import { ApiError } from '../errors';
-import { createDefaultFalUpscaler, createFalUpscaler, MODEL_TABLE } from '../upscaler/fal';
+import { createDefaultFalUpscaler, createFalUpscaler, describeProviderError, MODEL_TABLE } from '../upscaler/fal';
 
 jest.mock('@fal-ai/client', () => ({ createFalClient: jest.fn() }));
 
@@ -88,5 +88,36 @@ describe('fal upscaler', () => {
     (createFalClient as jest.Mock).mockReturnValue(fakeFal());
     createDefaultFalUpscaler('secret-key');
     expect(createFalClient).toHaveBeenCalledWith({ credentials: 'secret-key' });
+  });
+
+  it('reports provider errors to the hook', async () => {
+    const fal = fakeFal();
+    const failure = Object.assign(new Error('Forbidden'), { status: 403, body: { detail: 'Exhausted balance' } });
+    fal.storage.upload.mockRejectedValue(failure);
+    const onProviderError = jest.fn();
+    await createFalUpscaler(fal as never, onProviderError).upscale(request('enhance')).catch(() => {});
+    expect(onProviderError).toHaveBeenCalledWith(failure);
+  });
+});
+
+describe('describeProviderError', () => {
+  it('includes status, message and body, and redacts secrets', () => {
+    const err = Object.assign(new Error('Forbidden for key abc:123'), {
+      status: 403,
+      body: { detail: 'User is locked. Reason: Exhausted balance.' },
+    });
+    const text = describeProviderError(err, ['abc:123']);
+    expect(text).toContain('status 403');
+    expect(text).toContain('Exhausted balance');
+    expect(text).not.toContain('abc:123');
+    expect(text).toContain('<redacted>');
+  });
+
+  it('never leaves a key prefix when the key straddles the length cut', () => {
+    const key = 'fal-key-0123456789:abcdefghijklmnopqrstuvwxyz';
+    const err = new Error(`${'x'.repeat(480)}${key} trailing`);
+    const text = describeProviderError(err, [key]);
+    expect(text.length).toBeLessThanOrEqual(500);
+    expect(text).not.toContain('fal-key-0123');
   });
 });
