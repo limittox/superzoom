@@ -9,11 +9,27 @@ import { computeCrop } from './crop';
 const ORIGINAL_QUALITY = 95;
 const UPLOAD_QUALITY = 90;
 
-/** Size of the upload copy: the crop itself if ≤ 4 MP, otherwise scaled down keeping aspect ratio. */
-export function uploadDimensions(width: number, height: number, maxPixels: number = LIMITS.maxInputPixels) {
-  if (width * height <= maxPixels) return { width, height };
-  const scale = Math.sqrt(maxPixels / (width * height));
-  return { width: Math.floor(width * scale), height: Math.floor(height * scale) };
+/**
+ * Size of the upload copy, keeping aspect ratio: scaled down to at most 4 MP, or enlarged so
+ * the short side reaches the service minimum (tiny crops from extreme zoom), else the crop itself.
+ */
+export function uploadDimensions(
+  width: number,
+  height: number,
+  maxPixels: number = LIMITS.maxInputPixels,
+  minSide: number = LIMITS.minSidePx,
+) {
+  if (width * height > maxPixels) {
+    const scale = Math.sqrt(maxPixels / (width * height));
+    return { width: Math.floor(width * scale), height: Math.floor(height * scale) };
+  }
+  const short = Math.min(width, height);
+  if (short < minSide) {
+    // Round up so both sides stay at or above the minimum.
+    const scale = minSide / short;
+    return { width: Math.max(minSide, Math.ceil(width * scale)), height: Math.max(minSide, Math.ceil(height * scale)) };
+  }
+  return { width, height };
 }
 
 const toUri = (path: string) => (path.startsWith('file://') ? path : `file://${path}`);

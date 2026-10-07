@@ -1,7 +1,14 @@
 import { createFalClient } from '@fal-ai/client';
 
 import { ApiError } from '../errors';
-import { createDefaultFalUpscaler, createFalUpscaler, describeProviderError, MODEL_TABLE, planPasses } from '../upscaler/fal';
+import {
+  createDefaultFalUpscaler,
+  createFalUpscaler,
+  describeProviderError,
+  MODEL_TABLE,
+  planForModel,
+  planPasses,
+} from '../upscaler/fal';
 
 jest.mock('@fal-ai/client', () => ({ createFalClient: jest.fn() }));
 
@@ -124,8 +131,8 @@ describe('describeProviderError', () => {
 });
 
 describe('extreme-zoom upscaling (two passes for 4x models)', () => {
-  // A 100x crop from the Samsung: 94x204 px, planned factor 10.
-  const tiny = (mode: 'enhance' | 'pro' | 'creative') => request(mode, 94, 204);
+  // A 100x crop from the Samsung (95x204 px), enlarged to 128x275 for upload: planned factor 10.
+  const tiny = (mode: 'enhance' | 'pro' | 'creative') => request(mode, 128, 275);
   const passOutputs = (fal: ReturnType<typeof fakeFal>) =>
     fal.subscribe
       .mockResolvedValueOnce({ data: { image: { url: 'https://fal.media/pass1.jpg' } }, requestId: 'r1' })
@@ -138,12 +145,37 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
     expect(planPasses(4, 4)).toEqual([4]);
   });
 
-  it('runs Enhance (SeedVR2) at 10x in a single request', async () => {
+  it('runs Enhance (SeedVR2) in a single request, capped so the output fits 1920x1080', async () => {
     const fal = fakeFal();
     const result = await createFalUpscaler(fal as never).upscale(tiny('enhance'));
     expect(fal.subscribe).toHaveBeenCalledTimes(1);
-    expect(fal.subscribe.mock.calls[0][1].input.upscale_factor).toBe(10);
-    expect(result).toEqual({ url: 'https://fal.media/out.jpg', width: 940, height: 2040 });
+    expect(fal.subscribe.mock.calls[0][1].input.upscale_factor).toBeCloseTo(1920 / 275, 6);
+    expect(result).toEqual({ url: 'https://fal.media/out.jpg', width: 893, height: 1920 });
+  });
+
+  it('caps SeedVR2 only for inputs under 256 px on the short side', () => {
+    // fal: "Both dimensions must be at least 256 pixels when the output exceeds 1080p".
+    expect(planForModel(MODEL_TABLE.enhance, 128, 275)).toEqual({ factor: 1920 / 275, outputWidth: 893, outputHeight: 1920 });
+    expect(planForModel(MODEL_TABLE.enhance, 275, 128)).toEqual({ factor: 1920 / 275, outputWidth: 1920, outputHeight: 893 });
+    expect(planForModel(MODEL_TABLE.enhance, 256, 550).factor).toBe(10);
+    expect(planForModel(MODEL_TABLE.enhance, 1000, 1000).factor).toBe(4);
+    expect(planForModel(MODEL_TABLE.pro, 128, 275).factor).toBe(10);
+    expect(planForModel(MODEL_TABLE.creative, 128, 275).factor).toBe(10);
+  });
+
+  it('rejects a narrow Enhance input that cannot fit the cap even at 2x', async () => {
+    // 255x5000 at 2x would be 510x10000, beyond SeedVR2's 1920x1080 limit for small inputs.
+    expect(() => planForModel(MODEL_TABLE.enhance, 255, 5000)).toThrow(ApiError);
+    expect(() => planForModel(MODEL_TABLE.enhance, 255, 5000)).toThrow(expect.objectContaining({ code: 'image_too_small' }));
+    expect(planForModel(MODEL_TABLE.enhance, 255, 960).factor).toBe(2);
+    expect(planForModel(MODEL_TABLE.pro, 255, 5000).factor).toBeGreaterThanOrEqual(2);
+
+    const fal = fakeFal();
+    await expect(createFalUpscaler(fal as never).upscale(request('enhance', 255, 5000))).rejects.toMatchObject({
+      code: 'image_too_small',
+    });
+    expect(fal.storage.upload).not.toHaveBeenCalled();
+    expect(fal.subscribe).not.toHaveBeenCalled();
   });
 
   it.each(['pro', 'creative'] as const)('runs %s in two passes: 4x, then 2.5x on the first output', async (mode) => {
@@ -159,7 +191,7 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
     expect(first[1].input).toMatchObject({ image_url: 'https://fal.media/in.jpg', upscale_factor: 4 });
     expect(second[1].input).toMatchObject({ image_url: 'https://fal.media/pass1.jpg', upscale_factor: 2.5 });
     expect(first[1].abortSignal).toBe(second[1].abortSignal);
-    expect(result).toEqual({ url: 'https://fal.media/pass2.jpg', width: 940, height: 2040 });
+    expect(result).toEqual({ url: 'https://fal.media/pass2.jpg', width: 1280, height: 2750 });
   });
 
   it('maps a failure in the second pass to provider_error', async () => {
@@ -206,7 +238,7 @@ describe('abandoned requests cancel queued fal jobs', () => {
     const fal = fakeFal();
     fal.subscribe = enqueueAndHang('job-1') as never;
     const controller = new AbortController();
-    const pending = createFalUpscaler(fal as never).upscale({ ...request('creative', 94, 204), signal: controller.signal });
+    const pending = createFalUpscaler(fal as never).upscale({ ...request('creative', 128, 275), signal: controller.signal });
     await Promise.resolve();
     await Promise.resolve();
     controller.abort();

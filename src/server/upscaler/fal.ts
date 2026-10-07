@@ -1,7 +1,7 @@
 import { createFalClient, type FalClient } from '@fal-ai/client';
 
-import type { EnhanceMode } from '@/shared/enhance';
-import { chooseUpscaleFactor } from '@/shared/upscale';
+import { type EnhanceMode, LIMITS } from '@/shared/enhance';
+import { chooseUpscaleFactor, type UpscalePlan } from '@/shared/upscale';
 
 import { ApiError, providerError, timeoutError } from '../errors';
 import type { UpscaleRequest, UpscaleResult, Upscaler } from './types';
@@ -13,7 +13,34 @@ interface ModelSpec {
   endpoint: string;
   /** Largest `upscale_factor` the model accepts in one request. */
   maxFactorPerPass: number;
+  /**
+   * Inputs with a short side under `minSide` may only produce outputs that fit `maxOutput`
+   * (in either orientation); the factor is lowered to fit.
+   */
+  smallInput?: { minSide: number; maxOutput: { long: number; short: number } };
   buildInput(imageUrl: string, factor: number): Record<string, unknown>;
+}
+
+/**
+ * The upscale plan for one model: the shared plan, with the factor lowered where the model
+ * limits small inputs. An input that can't fit even at the 2x minimum (a long, narrow image)
+ * is rejected before the provider is called. extreme-zoom-100x design decision 7.
+ */
+export function planForModel(spec: ModelSpec, width: number, height: number): UpscalePlan {
+  const plan = chooseUpscaleFactor(width, height);
+  const limit = spec.smallInput;
+  if (!limit || Math.min(width, height) >= limit.minSide) return plan;
+  const { long, short } = limit.maxOutput;
+  const fit = Math.min(long / Math.max(width, height), short / Math.min(width, height));
+  if (fit < LIMITS.minUpscale) {
+    throw new ApiError(
+      'image_too_small',
+      `In this mode, images under ${limit.minSide} px on the short side can be at most ${long / LIMITS.minUpscale} × ${short / LIMITS.minUpscale} px.`,
+      422,
+    );
+  }
+  const factor = Math.min(plan.factor, fit);
+  return { factor, outputWidth: Math.floor(width * factor), outputHeight: Math.floor(height * factor) };
 }
 
 /**
@@ -40,6 +67,9 @@ export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
   enhance: {
     endpoint: 'fal-ai/seedvr/upscale/image',
     maxFactorPerPass: 10,
+    // fal 422 (device testing, 2026-10-07): "Both dimensions must be at least 256 pixels when the
+    // output exceeds 1080p". 1920×1080 in either orientation satisfies every reading of "1080p".
+    smallInput: { minSide: 256, maxOutput: { long: 1920, short: 1080 } },
     buildInput: (imageUrl, factor) => ({
       image_url: imageUrl,
       upscale_mode: 'factor',
@@ -99,7 +129,7 @@ export function createFalUpscaler(client: FalLike, onProviderError?: (err: unkno
   return {
     async upscale({ image, width, height, mode, signal }: UpscaleRequest): Promise<UpscaleResult> {
       const spec = MODEL_TABLE[mode];
-      const plan = chooseUpscaleFactor(width, height);
+      const plan = planForModel(spec, width, height);
       const aborted = rejectOnAbort(signal);
       // Keep an unobserved rejection from surfacing when the request finishes first.
       aborted.catch(() => {});

@@ -26,8 +26,8 @@ describe('chooseUpscaleFactor', () => {
     expect(chooseUpscaleFactor(300, 200).factor).toBe(10);
   });
 
-  it('upscales a 100x Samsung crop (94x204) 10x to about 1.9 MP', () => {
-    expect(chooseUpscaleFactor(94, 204)).toEqual({ factor: 10, outputWidth: 940, outputHeight: 2040 });
+  it('upscales a 100x Samsung upload (95x204 crop enlarged to 128x275) 10x to about 3.5 MP', () => {
+    expect(chooseUpscaleFactor(128, 275)).toEqual({ factor: 10, outputWidth: 1280, outputHeight: 2750 });
   });
 
   it('rounds down to the nearest supported factor', () => {

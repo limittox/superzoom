@@ -45,11 +45,15 @@ describe('validateImage', () => {
 
   it('rejects a 50x50 image as image_too_small', () => {
     expect(validateImage(makePng(50, 50))).toMatchObject({ ok: false, code: 'image_too_small' });
-    expect(validateImage(makeJpeg(1000, 63))).toMatchObject({ ok: false, code: 'image_too_small' });
+    expect(validateImage(makeJpeg(1000, 127))).toMatchObject({ ok: false, code: 'image_too_small' });
   });
 
-  it('accepts a 64 px short side', () => {
-    expect(validateImage(makeJpeg(64, 64))).toMatchObject({ ok: true });
+  it('rejects a 100x crop sent without enlarging (95x204)', () => {
+    expect(validateImage(makeJpeg(95, 204))).toMatchObject({ ok: false, code: 'image_too_small' });
+  });
+
+  it('accepts a 128 px short side', () => {
+    expect(validateImage(makeJpeg(128, 128))).toMatchObject({ ok: true });
   });
 
   it('rejects a 4000x3000 image as image_too_large', () => {

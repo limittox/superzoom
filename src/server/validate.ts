@@ -75,7 +75,7 @@ export function validateImage(bytes: Uint8Array): ValidationResult {
     return { ok: false, code: 'unsupported_format', message: 'The image could not be read.' };
   }
   if (Math.min(size.width, size.height) < LIMITS.minSidePx) {
-    return { ok: false, code: 'image_too_small', message: 'Images must be at least 64 pixels on each side.' };
+    return { ok: false, code: 'image_too_small', message: `Images must be at least ${LIMITS.minSidePx} pixels on each side.` };
   }
   if (size.width * size.height > LIMITS.maxInputPixels) {
     return { ok: false, code: 'image_too_large', message: 'Images must be 4 megapixels or smaller.' };
