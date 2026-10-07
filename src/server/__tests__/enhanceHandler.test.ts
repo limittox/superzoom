@@ -367,6 +367,18 @@ describe('races between submissions, status checks and cancels', () => {
     expect((await poll(handlers, 'job-1')).body).toMatchObject({ status: 'failed', error: { code: 'timeout' } });
   });
 
+  it.each(['get', 'isCancelRequested'] as const)(
+    'cancels the new pass when %s fails before its handle is saved',
+    async (method) => {
+      const { handlers, fal, jobs } = setup();
+      jest.spyOn(jobs, method).mockRejectedValueOnce(new Error('redis down'));
+      const res = await call(handlers.submit, makeRequest({ mode: 'pro' }));
+      expect(res.status).toBe(503);
+      expect(fal.queue.submit).toHaveBeenCalledTimes(1);
+      expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
+    },
+  );
+
   it('logs a cancel once, when its save succeeds, retrying a failed save on the next check', async () => {
     const { handlers, jobs, logs } = setup();
     const jobId = await submitted(handlers, { mode: 'pro' });

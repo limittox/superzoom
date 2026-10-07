@@ -2,7 +2,13 @@ import * as Crypto from 'expo-crypto';
 import { AppState } from 'react-native';
 
 import type { EnhanceJobStatus, EnhanceMode, EnhanceSuccess } from '@/shared/enhance';
-import { type EnhanceFailure, type EnhancePhase, type LocalImage, useSession } from '@/state/session';
+import {
+  type EnhanceFailure,
+  type EnhancePhase,
+  type LocalImage,
+  type RequestState,
+  useSession,
+} from '@/state/session';
 
 import {
   cancelJob,
@@ -95,6 +101,17 @@ export function createEnhancementRunner({
 }: RunnerOptions = {}) {
   let controller: AbortController | null = null;
 
+  /**
+   * Cancels the service-side work of a request the app is giving up on. A pending request
+   * without a job ID is left to its own run, which cancels by request ID when it ends; a failed
+   * one whose job ID never arrived is cancelled by request ID here.
+   */
+  function abandon(request: RequestState): void {
+    if (request.status === 'idle') return;
+    if (request.jobId) void api.cancel(request.jobId);
+    else if (request.status === 'error' && request.requestId) void api.cancelSubmission(request.requestId);
+  }
+
   /** Resolves when the app is in the foreground; rejects with `cancelled` on abort. */
   function waitForForeground(signal: AbortSignal): Promise<void> {
     return pause(0, signal);
@@ -140,7 +157,12 @@ export function createEnhancementRunner({
    * failed. Cancel doesn't abort the upload: the service would queue the job anyway, and the app
    * needs its ID to cancel it, so the caller cancels the job once the submission returns.
    */
-  async function submit(upload: LocalImage, mode: EnhanceMode, requestId: string, signal: AbortSignal): Promise<string> {
+  async function submit(
+    upload: LocalImage,
+    mode: EnhanceMode,
+    requestId: string,
+    signal: AbortSignal,
+  ): Promise<string> {
     const uploading = new AbortController().signal;
     for (let attempt = 0; ; attempt++) {
       let wentAway = !foreground.isActive();
@@ -229,8 +251,7 @@ export function createEnhancementRunner({
       const retrying = request.status === 'error' && request.mode === mode && request.error.code === 'network';
       const resumeJobId = retrying ? request.jobId : undefined;
       // A job this run replaces would never be shown; stop it on the service too.
-      const replaced = request.status !== 'idle' && !retrying ? request.jobId : undefined;
-      if (replaced) void api.cancel(replaced);
+      if (!retrying) abandon(request);
       controller?.abort();
       const current = new AbortController();
       controller = current;
@@ -275,7 +296,7 @@ export function createEnhancementRunner({
       controller?.abort();
       controller = null;
       const { request, cancelRequest } = useSession.getState();
-      if (request.status !== 'idle' && request.jobId) void api.cancel(request.jobId);
+      abandon(request);
       cancelRequest();
     },
   };

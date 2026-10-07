@@ -70,7 +70,7 @@ Overlapping requests (a pause-and-resume race, two screens, or a cancel during a
 3. Rate limit.
 4. Save the job record (`queued`, no provider handle yet) **before** `claimRequest` (`SET NX`). A resubmission during the upload gets this ID, and its polls must find the job: it reports `queued` until the upload finishes. If another identical submit won the claim, return its job ID; this one has already used a rate-limit slot, which is rare and acceptable.
 5. Upload to fal and submit pass 1, without the lock, so a slow upload can't outlive it.
-6. Take the lock and save the fal request ID, but only if the stored job is still waiting for its first pass. If it was cancelled, timed out or expired during the upload, cancel the new pass instead. Then respond `202 { jobId }`.
+6. Take the lock and save the fal request ID, but only if the stored job is still waiting for its first pass. If it was cancelled, timed out or expired during the upload, cancel the new pass instead. Any failure before the handle is saved (for example Redis) also cancels the new pass. Then respond `202 { jobId }`.
 
 **Cancel by request ID.** If the app is cancelled before it learns the job ID (a lost upload waiting to be resent), it sends `DELETE /api/enhance?requestId=…`. The service claims that request ID with a "cancelled" marker. If a job already holds the claim, the job is cancelled. Otherwise a submission still in flight with that request ID loses the claim and starts nothing (`404 job_not_found`).
 
@@ -103,7 +103,7 @@ The fal implementation keeps `MODEL_TABLE`, `planForModel` and `planPasses`. `bu
 - **Network failures while polling:** keep retrying. Each status check gives up after 15 s. Returning to the foreground restarts the 30 s allowance and replaces a check that stalled while the app was away. After 30 s of foreground time without a successful poll, fail with `network`.
 - **Retry:** a network failure keeps the `jobId` and the submission's `requestId` in the session. Retry resumes the job, or resubmits with the same `requestId` (the service returns the job if it created one). It starts a new submission only after a definite outcome: the job is gone (`job_not_found`), failed or was cancelled.
 - **`done`:** download the result as today. `failed` maps the error code to the existing messages.
-- **`cancel()`:** abort locally, send `DELETE` (fire-and-forget), and drop late results, using the existing request-ID guards in `session.ts`. Leaving the result screen already calls `cancel()`. A job kept after a network failure is cancelled too, when the user leaves, switches to another mode's result or starts another mode.
+- **`cancel()`:** abort locally, send `DELETE` (fire-and-forget), and drop late results, using the existing request-ID guards in `session.ts`. Leaving the result screen already calls `cancel()`. A request kept after a network failure is cancelled too, when the user leaves, switches to another mode's result or starts another mode: by job ID, or by request ID when the job ID never arrived.
 - **Cancel during upload** (found in device testing): the upload request isn't aborted. The service queues the job even if the app hangs up, so aborting would leave it running with no ID to cancel it. Instead, the app waits for the job ID in the background and then cancels the job.
 - *Why 2 s:* about 30 polls for a 60 s job. Cheap in Redis commands and fal status calls, and responsive enough.
 

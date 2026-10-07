@@ -606,6 +606,27 @@ describe('enhancement runner', () => {
     expect(api.cancel).not.toHaveBeenCalled();
   });
 
+  it('cancels a lost submission by request ID when the user leaves or picks another mode, but not on Retry', async () => {
+    const { api, runner } = setup();
+    api.submit.mockRejectedValue(networkError());
+    await runner.start('pro');
+    expect(useSession.getState().request).toMatchObject({ status: 'error', requestId: 'req-1' });
+    expect(useSession.getState().request).not.toHaveProperty('jobId');
+
+    // Same-mode Retry resubmits with the same request ID instead of cancelling it.
+    await runner.start('pro');
+    expect(api.cancelSubmission).not.toHaveBeenCalled();
+    expect(api.submit.mock.calls.map((c) => c[2])).toEqual(['req-1', 'req-1']);
+
+    // Another mode abandons it.
+    await runner.start('creative');
+    expect(api.cancelSubmission).toHaveBeenCalledWith('req-1');
+
+    // Leaving the screen abandons the latest one.
+    runner.cancel();
+    expect(api.cancelSubmission).toHaveBeenLastCalledWith('req-2');
+  });
+
   it('records failures reported by the job', async () => {
     const { runner } = setup([status({ status: 'failed', error: { code: 'provider_error', message: 'x' } })]);
     await runner.start('pro');

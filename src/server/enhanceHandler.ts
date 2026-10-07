@@ -338,17 +338,26 @@ export function createEnhanceHandlers({
           await upscaler.cancel(job);
           throw unavailable();
         }
+        // Until the new pass is saved or handed to a path that cancels it on failure, any error
+        // (e.g. Redis) would leave it running with no stored handle, so it is cancelled first.
+        let handedOff = false;
         try {
           const stored = await guarded(() => jobs.get(pending.id));
           const waiting = stored && isActive(stored) && !stored.providerRequestId;
           if (!waiting) {
             // Cancelled, timed out or expired during the upload: the new pass is no longer wanted.
+            handedOff = true;
             await upscaler.cancel(job);
           } else if (await guarded(() => jobs.isCancelRequested(pending.id))) {
+            handedOff = true;
             await cancelLocked(jobs, job);
           } else {
+            handedOff = true;
             await save(jobs, job, pending);
           }
+        } catch (err) {
+          if (!handedOff) await upscaler.cancel(job);
+          throw err;
         } finally {
           await jobs.unlock(pending.id, token).catch(() => {});
         }
