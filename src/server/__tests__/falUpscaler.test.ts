@@ -1,7 +1,14 @@
 import { createFalClient } from '@fal-ai/client';
 
 import { ApiError } from '../errors';
-import { createDefaultFalUpscaler, createFalUpscaler, describeProviderError, MODEL_TABLE, planPasses } from '../upscaler/fal';
+import {
+  createDefaultFalUpscaler,
+  createFalUpscaler,
+  describeProviderError,
+  MODEL_TABLE,
+  planForModel,
+  planPasses,
+} from '../upscaler/fal';
 
 jest.mock('@fal-ai/client', () => ({ createFalClient: jest.fn() }));
 
@@ -138,12 +145,22 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
     expect(planPasses(4, 4)).toEqual([4]);
   });
 
-  it('runs Enhance (SeedVR2) at 10x in a single request', async () => {
+  it('runs Enhance (SeedVR2) in a single request, capped so the output fits 1920x1080', async () => {
     const fal = fakeFal();
     const result = await createFalUpscaler(fal as never).upscale(tiny('enhance'));
     expect(fal.subscribe).toHaveBeenCalledTimes(1);
-    expect(fal.subscribe.mock.calls[0][1].input.upscale_factor).toBe(10);
-    expect(result).toEqual({ url: 'https://fal.media/out.jpg', width: 1280, height: 2750 });
+    expect(fal.subscribe.mock.calls[0][1].input.upscale_factor).toBeCloseTo(1920 / 275, 6);
+    expect(result).toEqual({ url: 'https://fal.media/out.jpg', width: 893, height: 1920 });
+  });
+
+  it('caps SeedVR2 only for inputs under 256 px on the short side', () => {
+    // fal: "Both dimensions must be at least 256 pixels when the output exceeds 1080p".
+    expect(planForModel(MODEL_TABLE.enhance, 128, 275)).toEqual({ factor: 1920 / 275, outputWidth: 893, outputHeight: 1920 });
+    expect(planForModel(MODEL_TABLE.enhance, 275, 128)).toEqual({ factor: 1920 / 275, outputWidth: 1920, outputHeight: 893 });
+    expect(planForModel(MODEL_TABLE.enhance, 256, 550).factor).toBe(10);
+    expect(planForModel(MODEL_TABLE.enhance, 1000, 1000).factor).toBe(4);
+    expect(planForModel(MODEL_TABLE.pro, 128, 275).factor).toBe(10);
+    expect(planForModel(MODEL_TABLE.creative, 128, 275).factor).toBe(10);
   });
 
   it.each(['pro', 'creative'] as const)('runs %s in two passes: 4x, then 2.5x on the first output', async (mode) => {

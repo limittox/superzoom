@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Output size limit
-The service SHALL choose an upscale factor of at least 2x and at most 10x per side, so the output never exceeds 16 megapixels and keeps the input's aspect ratio. For a model that accepts at most 4x per request, the service SHALL reach the factor with two passes.
+The service SHALL choose an upscale factor of at least 2x and at most 10x per side, so the output never exceeds 16 megapixels and keeps the input's aspect ratio. For a model that accepts at most 4x per request, the service SHALL reach the factor with two passes. Where a model limits the output for small inputs, the service SHALL lower the factor to fit: for Enhance, an input under 256 pixels on the short side produces at most 1920×1080 pixels (in either orientation).
 
 #### Scenario: Small crop
 - **WHEN** the input is 1000×1000 pixels
@@ -15,11 +15,11 @@ The service SHALL choose an upscale factor of at least 2x and at most 10x per si
 
 #### Scenario: Tiny crop from extreme zoom
 - **WHEN** the input is 128×275 pixels (a 100x crop enlarged by the app for upload) in Enhance mode
-- **THEN** the output is upscaled 10x to about 1280×2750 pixels in a single provider request
+- **THEN** the output is upscaled about 7x to about 893×1920 pixels in a single provider request
 
 #### Scenario: Tiny crop in a mode capped at 4x
 - **WHEN** the input is 128×275 pixels in Pro or Creative mode
-- **THEN** the service runs two provider requests and returns an output of the same size as Enhance mode, within the overall timeout
+- **THEN** the service runs two provider requests and returns an output upscaled 10x to about 1280×2750 pixels, within the overall timeout
 
 ### Requirement: Input validation
 The service SHALL accept only JPEG and PNG images no larger than 20 MB and at least 128 pixels on the shortest side, the smallest size every enhancement model accepts. Invalid input SHALL be rejected with a specific error before any AI provider is called.

@@ -70,11 +70,11 @@ Logs, requests and crashes appear on the EAS Hosting dashboard. Each request log
 
 The mapping lives in `MODEL_TABLE` in [`src/server/upscaler/fal.ts`](../src/server/upscaler/fal.ts), so it can change without an app release.
 
-| Mode | fal endpoint | Max factor per request | Approx. cost at the 16 MP cap | Approx. cost for a 100x crop (128 × 275 upload, ≈3.5 MP out) |
+| Mode | fal endpoint | Max factor per request | Approx. cost at the 16 MP cap | Approx. cost for a 100x crop (128 × 275 upload) |
 |---|---|---|---|---|
-| `enhance` | `fal-ai/seedvr/upscale/image` | 10x | $0.016 | $0.004 (one pass) |
-| `pro` | `fal-ai/topaz/upscale/image` (High Fidelity V2) | 4x | $0.08 | $0.16 (two passes) |
-| `creative` | `fal-ai/clarity-upscaler` | 4x | $0.48 | $0.12 (two passes) |
+| `enhance` | `fal-ai/seedvr/upscale/image` | 10x | $0.016 | $0.002 (one pass, ≈1.7 MP out) |
+| `pro` | `fal-ai/topaz/upscale/image` (High Fidelity V2) | 4x | $0.08 | $0.16 (two passes, ≈3.5 MP out) |
+| `creative` | `fal-ai/clarity-upscaler` | 4x | $0.48 | $0.12 (two passes, ≈3.5 MP out) |
 
 Prices are fal's listed prices as of 2026-10-07. Uploaded inputs and generated outputs are set to expire from fal's storage after one hour.
 
@@ -84,6 +84,6 @@ Prices are fal's listed prices as of 2026-10-07. Uploaded inputs and generated o
 
 - `X-Install-Id` header required (8–128 characters, letters, digits and dashes).
 - JPEG or PNG only, ≤ 20 MB, ≥ 128 px on the short side (SeedVR2's minimum), ≤ 4 MP. The app downscales larger crops before upload and enlarges crops under 128 px on the short side (extreme zoom) to 128 px.
-- Upscale factor between 2x and 10x, output ≤ 16 MP (two requests for models capped at 4x).
+- Upscale factor between 2x and 10x, output ≤ 16 MP (two requests for models capped at 4x). Enhance inputs under 256 px on the short side are capped to a 1920 × 1080 output, because SeedVR2 rejects larger outputs for them.
 - 120-second provider timeout, covering both passes of a two-pass request.
 - If the rate limiter's store is unreachable, the route rejects requests (503) rather than skipping the limit.

@@ -60,13 +60,13 @@ describe('POST /api/enhance', () => {
     expect(fal.subscribe.mock.calls[0][0]).toBe('fal-ai/seedvr/upscale/image');
   });
 
-  it('upscales a tiny 100x crop (enlarged to 128x275) 10x in one request in Enhance mode', async () => {
+  it('upscales a tiny 100x crop (enlarged to 128x275) in one request in Enhance mode, within 1920x1080', async () => {
     const { handler, fal } = setup();
     const res = await call(handler, makeRequest({ image: makeJpeg(128, 275), mode: 'enhance' }));
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ width: 1280, height: 2750, mode: 'enhance' });
+    expect(res.body).toMatchObject({ width: 893, height: 1920, mode: 'enhance' });
     expect(fal.subscribe).toHaveBeenCalledTimes(1);
-    expect(fal.subscribe.mock.calls[0][1].input.upscale_factor).toBe(10);
+    expect(fal.subscribe.mock.calls[0][1].input.upscale_factor).toBeCloseTo(1920 / 275, 6);
   });
 
   it('upscales a tiny 100x crop in two requests in Pro mode', async () => {

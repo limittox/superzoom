@@ -53,8 +53,9 @@ SeedVR2 rejects images under 128 px per side ("Both dimensions must be at least 
 - `LIMITS.minSidePx` (the service minimum) becomes 128, so every upload the service accepts works with every model.
 - The camera's own floor, `MIN_CROP_SHORT_SIDE`, stays 64 px of sensor data, so 100x is still reachable.
 - `uploadDimensions()` enlarges a crop whose short side is under 128 px so it's exactly 128 (95 × 204 → 128 × 275), keeping aspect ratio. The saved original stays at sensor size.
-- The output grows from about 1.9 MP to about 3.5 MP (10x of 128 × 275). That raises Clarity's per-MP cost a little; Topaz bills per image.
-- *Alternatives:* raise the crop floor to 128 px (max zoom about 74x on the test Samsung), or send sub-128 px Enhance inputs to another model (Enhance would change model and cost by crop size).
+- SeedVR2 has a second limit: "Both dimensions must be at least 256 pixels when the output exceeds 1080p" (fal 422; fal's docs don't define 1080p). `MODEL_TABLE.enhance.smallInput` lowers the factor for inputs under 256 px so the output fits 1920 × 1080 in either orientation, which satisfies every reading: 128 × 275 gets about 6.98x, giving 893 × 1920 (about 1.7 MP, close to the original 1.9 MP plan). `planForModel()` applies it.
+- Pro and Creative keep 10x, so their 100x outputs grow from about 1.9 MP to about 3.5 MP. That raises Clarity's per-MP cost a little; Topaz bills per image.
+- *Alternatives:* raise the crop floor to 128 px (max zoom about 74x on the test Samsung), send sub-128 px Enhance inputs to another model (Enhance would change model and cost by crop size), or enlarge uploads to 256 px (a 10x Enhance output would then be about 14 MP, and Pro and Creative would cost more for no extra detail).
 
 ### 5. Preview stabilization, conditional on framing
 The `Camera` gets `constraints={[{ previewStabilizationMode: 'auto' }]}`. Stabilization often crops the preview by a few percent, which would make the preview show less than the photo, so the capture crop would be wider than what the user framed (spec: Capture crops to the framed region). A device task checks framing at about 50x with stabilization on. If the framing is off by more than about 3%, the constraint is removed and the brace hint stays. Removing it is one line.
