@@ -70,18 +70,20 @@ Logs, requests and crashes appear on the EAS Hosting dashboard. Each request log
 
 The mapping lives in `MODEL_TABLE` in [`src/server/upscaler/fal.ts`](../src/server/upscaler/fal.ts), so it can change without an app release.
 
-| Mode | fal endpoint | Approx. cost per request at the 16 MP cap |
-|---|---|---|
-| `enhance` | `fal-ai/seedvr/upscale/image` | $0.016 |
-| `pro` | `fal-ai/topaz/upscale/image` (High Fidelity V2) | $0.08 |
-| `creative` | `fal-ai/clarity-upscaler` | $0.48 |
+| Mode | fal endpoint | Max factor per request | Approx. cost at the 16 MP cap | Approx. cost for a 100x crop (≈1.9 MP out) |
+|---|---|---|---|---|
+| `enhance` | `fal-ai/seedvr/upscale/image` | 10x | $0.016 | $0.002 (one pass) |
+| `pro` | `fal-ai/topaz/upscale/image` (High Fidelity V2) | 4x | $0.08 | $0.16 (two passes) |
+| `creative` | `fal-ai/clarity-upscaler` | 4x | $0.48 | $0.07 (two passes) |
 
 Prices are fal's listed prices as of 2026-10-07. Uploaded inputs and generated outputs are set to expire from fal's storage after one hour.
+
+**Two-pass upscaling.** The route picks one upscale factor per photo (see limits below). When it exceeds a model's per-request maximum, as with tiny crops from extreme zoom in Pro or Creative, the route runs the model twice: first at its maximum (4x), then at the remainder (for example 2.5x) on the first pass's output. Both passes count against the same 120-second timeout. Topaz bills per image, so Pro costs about twice as much in that case; Clarity bills per output megapixel, so its first, small pass is cheap.
 
 ## Limits enforced by the route
 
 - `X-Install-Id` header required (8–128 characters, letters, digits and dashes).
 - JPEG or PNG only, ≤ 20 MB, ≥ 64 px on the short side, ≤ 4 MP. The app downscales larger crops before upload.
-- Upscale factor between 2x and 4x, output ≤ 16 MP.
-- 120-second provider timeout.
+- Upscale factor between 2x and 10x, output ≤ 16 MP (two requests for models capped at 4x).
+- 120-second provider timeout, covering both passes of a two-pass request.
 - If the rate limiter's store is unreachable, the route rejects requests (503) rather than skipping the limit.

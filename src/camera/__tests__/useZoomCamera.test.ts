@@ -4,7 +4,7 @@
  * the zoom limit updates after a capture and survives a remount.
  */
 /* eslint-disable @typescript-eslint/no-require-imports */
-import { computeMaxZoom, estimatePhotoSize } from '../crop';
+import { computeZoomLimits, estimatePhotoSize } from '../crop';
 
 // Minimal stand-ins for the two Reanimated hooks useZoomCamera uses (the official mock needs the native worklets runtime).
 jest.mock('react-native-reanimated', () => {
@@ -81,22 +81,42 @@ describe('useZoomCamera learned photo size (rendered)', () => {
   it('lowers the zoom limit after a smaller photo at the optical cap, and keeps it after a remount', async () => {
     // Without lens geometry the optical cap is 1x, and the default display zoom (1x) is at the cap.
     const estimated = estimatePhotoSize(mockDevice.getSupportedResolutions());
-    const before = computeMaxZoom(1, estimated.width, estimated.height, SCREEN);
-    const learned = computeMaxZoom(1, mockPhotoSize.width, mockPhotoSize.height, SCREEN);
-    expect(learned).toBeLessThan(before);
+    const before = computeZoomLimits(1, estimated.width, estimated.height, SCREEN);
+    const learned = computeZoomLimits(1, mockPhotoSize.width, mockPhotoSize.height, SCREEN);
+    expect(learned.maxZoom).toBeLessThan(before.maxZoom);
+    expect(learned.nativeLimit).toBeLessThan(before.nativeLimit);
 
     const first = render();
-    expect(first.seen.at(-1)!.maxDisplayZoom).toBeCloseTo(before, 6);
+    expect(first.seen.at(-1)!.maxDisplayZoom).toBeCloseTo(before.maxZoom, 6);
+    expect(first.seen.at(-1)!.nativeLimit).toBeCloseTo(before.nativeLimit, 6);
 
+    let captured: Awaited<ReturnType<Hook['capture']>> = null;
     await TestRenderer.act(async () => {
-      await first.seen.at(-1)!.capture();
+      captured = await first.seen.at(-1)!.capture();
     });
-    expect(first.seen.at(-1)!.maxDisplayZoom).toBeCloseTo(learned, 6);
+    // Captured at 1x, within the native-pixel limit.
+    expect(captured!.aiReconstructed).toBe(false);
+    expect(first.seen.at(-1)!.maxDisplayZoom).toBeCloseTo(learned.maxZoom, 6);
+    expect(first.seen.at(-1)!.nativeLimit).toBeCloseTo(learned.nativeLimit, 6);
     TestRenderer.act(() => first.renderer.unmount());
 
     // A new mount starts from the learned size, not the estimate.
     const second = render();
-    expect(second.seen[0].maxDisplayZoom).toBeCloseTo(learned, 6);
+    expect(second.seen[0].maxDisplayZoom).toBeCloseTo(learned.maxZoom, 6);
+    expect(second.seen[0].nativeLimit).toBeCloseTo(learned.nativeLimit, 6);
     TestRenderer.act(() => second.renderer.unmount());
+  });
+
+  it('marks a capture beyond the native-pixel limit as AI-reconstructed', async () => {
+    const { seen, renderer } = render();
+    const hook = seen.at(-1)!;
+    expect(hook.nativeLimit).toBeLessThan(10);
+    hook.displayZoom.set(10);
+    let captured: Awaited<ReturnType<Hook['capture']>> = null;
+    await TestRenderer.act(async () => {
+      captured = await hook.capture();
+    });
+    expect(captured!.aiReconstructed).toBe(true);
+    TestRenderer.act(() => renderer.unmount());
   });
 });

@@ -79,6 +79,13 @@ describe('capture session', () => {
     expect(useSession.getState()).toMatchObject({ original: { uri: 'orig' }, upload: { uri: 'up' }, captureZoom: 8 });
   });
 
+  it('records whether the capture is AI-reconstructed, and clears it for a new session', () => {
+    useSession.getState().startSession(img('orig'), img('up'), 40, true);
+    expect(useSession.getState().aiReconstructed).toBe(true);
+    useSession.getState().startSession(img('orig2'), img('up2'), 3);
+    expect(useSession.getState().aiReconstructed).toBe(false);
+  });
+
   it('stores a result for the current request', () => {
     const s = useSession.getState();
     const id = s.beginRequest('enhance');

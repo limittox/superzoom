@@ -7,6 +7,8 @@ export const colors = {
   accent: '#ffd60a',
   /** Zoom readout once past the optical range. */
   beyondOptical: '#64d2ff',
+  /** Zoom readout past the native-pixel limit (AI-reconstructed). */
+  reconstructed: '#ff9f0a',
   danger: '#ff453a',
   divider: 'rgba(255, 255, 255, 0.9)',
 } as const;

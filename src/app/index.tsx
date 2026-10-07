@@ -10,7 +10,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Camera, type CameraRef, useCameraPermission } from 'react-native-vision-camera';
+import { Camera, type CameraRef, type Constraint, useCameraPermission } from 'react-native-vision-camera';
 import { scheduleOnRN } from 'react-native-worklets';
 
 import { handleCameraError } from '@/camera/cameraErrors';
@@ -23,6 +23,13 @@ import { ZoomControls } from '@/components/ZoomControls';
 import { useSession } from '@/state/session';
 import { useSettings, useSettingsHydrated } from '@/state/settings';
 import { colors, formatZoom, spacing } from '@/ui/theme';
+
+/**
+ * Steadier preview at extreme zoom where the camera supports it (best effort; ignored otherwise).
+ * Module-level so the array keeps its identity and doesn't reconfigure the session on re-render.
+ * extreme-zoom-100x design decision 5: remove if it changes framing (task 5.2).
+ */
+const CAMERA_CONSTRAINTS: Constraint[] = [{ previewStabilizationMode: 'auto' }];
 
 export default function CameraScreen() {
   const permission = useCameraPermission();
@@ -72,8 +79,17 @@ function ZoomCamera() {
   const [layout, setLayout] = useState({ width: 1, height: 2 });
   const longOverShort = Math.max(layout.width, layout.height) / Math.min(layout.width, layout.height);
   const zoomCamera = useZoomCamera(longOverShort);
-  const { device, lensInfo, photoOutput, displayZoom, deviceZoom, previewScale, minDisplayZoom, maxDisplayZoom } =
-    zoomCamera;
+  const {
+    device,
+    lensInfo,
+    photoOutput,
+    displayZoom,
+    deviceZoom,
+    previewScale,
+    minDisplayZoom,
+    maxDisplayZoom,
+    nativeLimit,
+  } = zoomCamera;
   const isActive = useCameraActive();
   useCameraDiagnostics(device);
   const mode = useSettings((s) => s.mode);
@@ -149,7 +165,7 @@ function ZoomCamera() {
       const result = await zoomCamera.capture();
       if (!result) return;
       const proceed = () => {
-        useSession.getState().startSession(result.original, result.upload, result.displayZoom);
+        useSession.getState().startSession(result.original, result.upload, result.displayZoom, result.aiReconstructed);
         if (__DEV__) useSession.setState({ devLensNote: result.devLensNote ?? null });
         router.push('/result');
       };
@@ -197,6 +213,7 @@ function ZoomCamera() {
               outputs={[photoOutput]}
               zoom={deviceZoom as SharedValue<number>}
               onError={handleCameraError}
+              constraints={CAMERA_CONSTRAINTS}
               resizeMode="cover"
             />
           </Animated.View>
@@ -206,7 +223,7 @@ function ZoomCamera() {
       <Animated.View pointerEvents="none" style={[styles.flash, flashStyle]} />
 
       <SafeAreaView style={styles.overlay} pointerEvents="box-none" edges={['bottom']}>
-        <ZoomControls displayZoom={displayZoom} lensInfo={lensInfo} maxZoom={maxDisplayZoom} />
+        <ZoomControls displayZoom={displayZoom} lensInfo={lensInfo} maxZoom={maxDisplayZoom} nativeLimit={nativeLimit} />
         {/* Disabled until saved settings load, so a choice made now isn't overwritten by hydration. */}
         <ModePicker value={mode} onChange={setMode} disabled={!settingsHydrated} />
         <Pressable

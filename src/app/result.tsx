@@ -7,6 +7,7 @@ import { CompareView } from '@/components/CompareView';
 import { ConsentSheet } from '@/components/ConsentSheet';
 import { ModePicker } from '@/components/ModePicker';
 import { MODE_LABELS, RETRYABLE } from '@/enhance/messages';
+import { resultLabel } from '@/enhance/resultLabel';
 import { enhancementRunner } from '@/enhance/runner';
 import { saveToGallery } from '@/media/saveToGallery';
 import type { EnhanceMode } from '@/shared/enhance';
@@ -21,6 +22,7 @@ export default function ResultScreen() {
   const shownMode = useSession((s) => s.shownMode);
   const request = useSession((s) => s.request);
   const devLensNote = useSession((s) => s.devLensNote);
+  const aiReconstructed = useSession((s) => s.aiReconstructed);
   const { cloudConsent, setCloudConsent, mode: preferredMode, setMode } = useSettings();
   // Saved consent loads asynchronously; nothing below may act on `cloudConsent` until it has.
   const hydrated = useSettingsHydrated();
@@ -177,7 +179,7 @@ export default function ResultScreen() {
         </Pressable>
         {enhanced && shownMode && (
           <View style={styles.label} accessibilityRole="text">
-            <Text style={styles.labelText}>AI-enhanced ({MODE_LABELS[shownMode].title})</Text>
+            <Text style={styles.labelText}>{resultLabel(shownMode, aiReconstructed).title}</Text>
           </View>
         )}
         <Pressable onPress={showSaveOptions} disabled={saving} accessibilityRole="button" hitSlop={12}>
@@ -223,8 +225,8 @@ export default function ResultScreen() {
       </View>
 
       {__DEV__ && devLensNote && <Text style={styles.devNote}>Dev · {devLensNote}</Text>}
-      {shownMode === 'creative' && enhanced && (
-        <Text style={styles.caveat}>Creative mode may invent detail that doesn&apos;t match reality.</Text>
+      {enhanced && shownMode && resultLabel(shownMode, aiReconstructed).note && (
+        <Text style={styles.caveat}>{resultLabel(shownMode, aiReconstructed).note}</Text>
       )}
       <View style={styles.footer}>
         <ModePicker value={selectedMode} onChange={onSelectMode} completed={results} disabled={!hydrated} />

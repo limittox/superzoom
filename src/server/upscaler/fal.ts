@@ -11,7 +11,25 @@ const OBJECT_EXPIRY = '1h' as const;
 
 interface ModelSpec {
   endpoint: string;
+  /** Largest `upscale_factor` the model accepts in one request. */
+  maxFactorPerPass: number;
   buildInput(imageUrl: string, factor: number): Record<string, unknown>;
+}
+
+/**
+ * Splits a total upscale factor into per-request factors for a model capped at
+ * `maxPerPass`: full-strength passes first, then the remainder (always > 1).
+ * extreme-zoom-100x design decision 4.
+ */
+export function planPasses(factor: number, maxPerPass: number): number[] {
+  const passes: number[] = [];
+  let remaining = factor;
+  while (remaining > maxPerPass * (1 + 1e-9)) {
+    passes.push(maxPerPass);
+    remaining /= maxPerPass;
+  }
+  passes.push(remaining);
+  return passes;
 }
 
 /**
@@ -21,6 +39,7 @@ interface ModelSpec {
 export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
   enhance: {
     endpoint: 'fal-ai/seedvr/upscale/image',
+    maxFactorPerPass: 10,
     buildInput: (imageUrl, factor) => ({
       image_url: imageUrl,
       upscale_mode: 'factor',
@@ -30,6 +49,7 @@ export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
   },
   pro: {
     endpoint: 'fal-ai/topaz/upscale/image',
+    maxFactorPerPass: 4,
     buildInput: (imageUrl, factor) => ({
       image_url: imageUrl,
       model: 'High Fidelity V2',
@@ -40,6 +60,7 @@ export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
   },
   creative: {
     endpoint: 'fal-ai/clarity-upscaler',
+    maxFactorPerPass: 4,
     buildInput: (imageUrl, factor) => ({
       image_url: imageUrl,
       upscale_factor: factor,
@@ -88,20 +109,27 @@ export function createFalUpscaler(client: FalLike, onProviderError?: (err: unkno
           client.storage.upload(image, { lifecycle: { expiresIn: OBJECT_EXPIRY } }),
           aborted,
         ]);
-        const result = await Promise.race([
-          client.subscribe(spec.endpoint, {
-            input: spec.buildInput(imageUrl, plan.factor),
-            abortSignal: signal,
-            storageSettings: { expiresIn: OBJECT_EXPIRY },
-          }),
-          aborted,
-        ]);
-        const output = result.data as FalImageOutput;
-        if (!output.image?.url) throw providerError();
+        // Models capped below the planned factor get a second pass on the first pass's output.
+        // Both passes share the request's abort signal, so the overall timeout covers them together.
+        let url = imageUrl;
+        let output: FalImageOutput = {};
+        for (const factor of planPasses(plan.factor, spec.maxFactorPerPass)) {
+          const result = await Promise.race([
+            client.subscribe(spec.endpoint, {
+              input: spec.buildInput(url, factor),
+              abortSignal: signal,
+              storageSettings: { expiresIn: OBJECT_EXPIRY },
+            }),
+            aborted,
+          ]);
+          output = result.data as FalImageOutput;
+          if (!output.image?.url) throw providerError();
+          url = output.image.url;
+        }
         return {
-          url: output.image.url,
-          width: output.image.width ?? plan.outputWidth,
-          height: output.image.height ?? plan.outputHeight,
+          url,
+          width: output.image?.width ?? plan.outputWidth,
+          height: output.image?.height ?? plan.outputHeight,
         };
       } catch (err) {
         if (err instanceof ApiError) throw err;
