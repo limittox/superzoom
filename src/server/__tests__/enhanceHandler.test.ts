@@ -15,6 +15,7 @@ function fakeFal() {
   return {
     storage: { upload: jest.fn().mockResolvedValue('https://fal.media/in.jpg'), transformInput: jest.fn() },
     subscribe: jest.fn().mockResolvedValue({ data: { image: { url: 'https://fal.media/out.jpg' } }, requestId: 'r' }),
+    queue: { cancel: jest.fn().mockResolvedValue(undefined) },
   };
 }
 
@@ -35,13 +36,14 @@ function makeRequest({
   image = makeJpeg(1000, 1000) as Uint8Array | null,
   mode,
   installId = INSTALL_ID as string | null,
-}: { image?: Uint8Array | null; mode?: string; installId?: string | null } = {}) {
+  signal,
+}: { image?: Uint8Array | null; mode?: string; installId?: string | null; signal?: AbortSignal } = {}) {
   const form = new FormData();
   if (image) form.append('image', new Blob([image as BlobPart], { type: 'image/jpeg' }), 'crop.jpg');
   if (mode !== undefined) form.append('mode', mode);
   const headers: Record<string, string> = {};
   if (installId) headers[INSTALL_ID_HEADER] = installId;
-  return new Request(`http://localhost${ENHANCE_PATH}`, { method: 'POST', body: form, headers });
+  return new Request(`http://localhost${ENHANCE_PATH}`, { method: 'POST', body: form, headers, signal });
 }
 
 async function call(handler: (r: Request) => Promise<Response>, request: Request) {
@@ -205,6 +207,42 @@ describe('POST /api/enhance', () => {
     expect(res.body.error.code).toBe('file_too_large');
     expect(pulled).toBeLessThan(25);
     expect(fal.subscribe).not.toHaveBeenCalled();
+  });
+});
+
+describe('abandoned requests', () => {
+  const enqueueAndHang = (requestId: string) =>
+    jest.fn((_endpoint: string, options: { onEnqueue?: (id: string) => void }) => {
+      options.onEnqueue?.(requestId);
+      return new Promise(() => {});
+    });
+
+  it('cancels the queued fal job when the app cancels, and logs it as cancelled', async () => {
+    const { handler, fal, logs } = setup({ timeoutMs: 5000 });
+    fal.subscribe = enqueueAndHang('job-app') as never;
+    const client = new AbortController();
+    const pending = handler(makeRequest({ mode: 'creative', signal: client.signal }));
+    // Let the route reach the provider call, then cancel from the app.
+    await new Promise((r) => setTimeout(r, 20));
+    client.abort();
+    await pending;
+    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/clarity-upscaler', { requestId: 'job-app' });
+    expect(logs.at(-1)).toMatchObject({ outcome: 'cancelled', mode: 'creative' });
+  });
+
+  it('cancels the queued fal job on timeout and responds with timeout', async () => {
+    const { handler, fal } = setup({ timeoutMs: 20 });
+    fal.subscribe = enqueueAndHang('job-slow') as never;
+    const res = await call(handler, makeRequest({ mode: 'pro' }));
+    expect(res.status).toBe(504);
+    expect(res.body.error.code).toBe('timeout');
+    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'job-slow' });
+  });
+
+  it('cancels nothing for a normal request', async () => {
+    const { handler, fal } = setup();
+    await call(handler, makeRequest());
+    expect(fal.queue.cancel).not.toHaveBeenCalled();
   });
 });
 

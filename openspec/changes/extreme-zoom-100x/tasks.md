@@ -22,6 +22,7 @@
 - [x] 4.1 Raise `LIMITS.maxUpscale` to 10 and update `chooseUpscaleFactor()` tests; verify 94×204 → 10x (≈1.9 MP), 1000×1000 → 4x, 2000×1500 unchanged, and no output above 16 MP across the size sweep
 - [x] 4.2 Add `maxFactorPerPass` to `MODEL_TABLE` (SeedVR2 10, Topaz 4, Clarity 4) and run a second fal request on pass 1's output URL when the factor exceeds it, sharing the abort signal; verify mocked-client tests cover single-pass Enhance at 10x, two-pass Pro and Creative (factors 4 and 2.5, pass 2 `image_url` = pass 1 URL), a pass-2 failure → `provider_error`, and an abort during pass 2 → `timeout`
 - [x] 4.3 Update `docs/backend.md` (upscale range, two-pass behaviour and its cost) and the route tests for a 94×204 input; verify `npm test` passes and the documented numbers match `LIMITS`
+- [x] 4.4 Stop provider work for abandoned requests: link the route's abort controller to `request.signal` (client cancel or disconnect) as well as the timeout, log those as `cancelled`, and have the fal upscaler record each job's request ID (`onEnqueue`) and call `queue.cancel` on abort without starting further passes; verify tests cover a client abort during pass 1 (cancel called, no pass 2), a timeout (cancel called, `timeout` response) and a normal run (no cancel)
 
 ## 5. Device verification
 

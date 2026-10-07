@@ -9,6 +9,7 @@ function fakeFal(output: unknown = { image: { url: 'https://fal.media/out.jpg' }
   return {
     storage: { upload: jest.fn().mockResolvedValue('https://fal.media/in.jpg'), transformInput: jest.fn() },
     subscribe: jest.fn().mockResolvedValue({ data: output, requestId: 'req-1' }),
+    queue: { cancel: jest.fn().mockResolvedValue(undefined) },
   };
 }
 
@@ -190,5 +191,39 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
     expect(MODEL_TABLE.enhance.maxFactorPerPass).toBe(10);
     expect(MODEL_TABLE.pro.maxFactorPerPass).toBe(4);
     expect(MODEL_TABLE.creative.maxFactorPerPass).toBe(4);
+  });
+});
+
+describe('abandoned requests cancel queued fal jobs', () => {
+  /** A subscribe that enqueues (reporting a request ID) and then never finishes. */
+  const enqueueAndHang = (requestId: string) =>
+    jest.fn((_endpoint: string, options: { onEnqueue?: (id: string) => void }) => {
+      options.onEnqueue?.(requestId);
+      return new Promise(() => {});
+    });
+
+  it('cancels the queued job and starts no second pass when the request is aborted during pass 1', async () => {
+    const fal = fakeFal();
+    fal.subscribe = enqueueAndHang('job-1') as never;
+    const controller = new AbortController();
+    const pending = createFalUpscaler(fal as never).upscale({ ...request('creative', 94, 204), signal: controller.signal });
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'timeout' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/clarity-upscaler', { requestId: 'job-1' });
+    expect(fal.subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cancel anything for a completed request', async () => {
+    const fal = fakeFal();
+    fal.subscribe.mockImplementation(async (_e: string, options: { onEnqueue?: (id: string) => void }) => {
+      options.onEnqueue?.('job-ok');
+      return { data: { image: { url: 'https://fal.media/out.jpg' } } };
+    });
+    const controller = new AbortController();
+    await createFalUpscaler(fal as never).upscale({ ...request('enhance'), signal: controller.signal });
+    controller.abort(); // a late abort after completion must not cancel the finished job
+    expect(fal.queue.cancel).not.toHaveBeenCalled();
   });
 });

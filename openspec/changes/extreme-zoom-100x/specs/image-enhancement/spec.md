@@ -20,3 +20,16 @@ The service SHALL choose an upscale factor of at least 2x and at most 10x per si
 #### Scenario: Tiny crop in a mode capped at 4x
 - **WHEN** the input is 94×204 pixels in Pro or Creative mode
 - **THEN** the service runs two provider requests and returns an output of the same size as Enhance mode, within the overall timeout
+
+## ADDED Requirements
+
+### Requirement: Abandoned requests stop provider work
+When the app cancels or disconnects before the response, or the request times out, the service SHALL stop processing it and SHALL ask the AI provider to cancel any of its jobs still queued, so abandoned requests don't occupy provider capacity or cost money.
+
+#### Scenario: User cancels while enhancing
+- **WHEN** the app cancels a request while the provider job is still queued
+- **THEN** the service stops waiting, asks the provider to cancel that job, and starts no further passes
+
+#### Scenario: Request times out
+- **WHEN** a request reaches the 120-second timeout with a provider job still queued
+- **THEN** the service responds with `timeout` and asks the provider to cancel that job

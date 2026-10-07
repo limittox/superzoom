@@ -12,6 +12,7 @@ The user wants zoom up to 100x, like the "Space Zoom" on their Samsung. Today th
 - **Labelling.** Results from beyond the native-pixel limit are labeled AI-reconstructed, saying most detail was generated, in every mode.
 - **Steadier extreme-zoom preview.** Preview stabilization is requested where the camera supports it, and past the native-pixel limit a "brace your phone" hint appears.
 - **Zoom presets** reach the new range (up to 100x where available).
+- **Cancelled and timed-out requests stop provider work** (found in device testing). Until now, cancelling in the app or hitting the timeout only stopped the server waiting: fal kept the job, kept charging, and queued later requests behind it, which caused two-pass Creative runs to time out.
 - Out of scope: multi-frame burst capture, iOS-specific tuning beyond what the shared code does, and changes to pricing or limits per mode.
 
 ## Capabilities
@@ -21,7 +22,7 @@ The user wants zoom up to 100x, like the "Space Zoom" on their Samsung. Today th
 
 ### Modified Capabilities
 - `zoom-capture`: the "Maximum zoom bound by native pixels" requirement changes from a 1 MP crop floor to a 64 px minimum crop with a 100x ceiling. "Zoom level indicator" gains the AI-reconstructed tier. New requirements cover the native-pixel limit and the extreme-zoom preview.
-- `image-enhancement`: "Output size limit" widens the upscale factor to 2x–10x, using two passes for models capped at 4x.
+- `image-enhancement`: "Output size limit" widens the upscale factor to 2x–10x, using two passes for models capped at 4x. A new requirement makes abandoned requests (cancelled, disconnected or timed out) cancel their queued provider jobs.
 - `enhanced-photo-review`: "AI-enhanced labeling" adds the AI-reconstructed label for captures beyond the native-pixel limit.
 
 ## Impact

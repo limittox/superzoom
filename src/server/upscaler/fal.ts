@@ -68,7 +68,7 @@ export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
   },
 };
 
-type FalLike = Pick<FalClient, 'storage' | 'subscribe'>;
+type FalLike = Pick<FalClient, 'storage' | 'subscribe' | 'queue'>;
 
 interface FalImageOutput {
   image?: { url?: string; width?: number; height?: number };
@@ -104,6 +104,15 @@ export function createFalUpscaler(client: FalLike, onProviderError?: (err: unkno
       // Keep an unobserved rejection from surfacing when the request finishes first.
       aborted.catch(() => {});
 
+      // fal's abortSignal only stops this client waiting; the job stays queued on fal and keeps
+      // billing. On abort (app cancel, disconnect or timeout), cancel the job still in the queue.
+      let queuedRequestId: string | undefined;
+      const cancelQueuedJob = () => {
+        if (!queuedRequestId) return;
+        client.queue?.cancel(spec.endpoint, { requestId: queuedRequestId }).catch(() => {});
+      };
+      signal.addEventListener('abort', cancelQueuedJob, { once: true });
+
       try {
         const imageUrl = await Promise.race([
           client.storage.upload(image, { lifecycle: { expiresIn: OBJECT_EXPIRY } }),
@@ -113,15 +122,23 @@ export function createFalUpscaler(client: FalLike, onProviderError?: (err: unkno
         // Both passes share the request's abort signal, so the overall timeout covers them together.
         let url = imageUrl;
         let output: FalImageOutput = {};
-        for (const factor of planPasses(plan.factor, spec.maxFactorPerPass)) {
+        const passes = planPasses(plan.factor, spec.maxFactorPerPass);
+        for (const [i, factor] of passes.entries()) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.info(`[fal] ${mode} pass ${i + 1}/${passes.length}: ${spec.endpoint} at ${factor.toFixed(2)}x`);
+          }
           const result = await Promise.race([
             client.subscribe(spec.endpoint, {
               input: spec.buildInput(url, factor),
               abortSignal: signal,
               storageSettings: { expiresIn: OBJECT_EXPIRY },
+              onEnqueue: (requestId) => {
+                queuedRequestId = requestId;
+              },
             }),
             aborted,
           ]);
+          queuedRequestId = undefined;
           output = result.data as FalImageOutput;
           if (!output.image?.url) throw providerError();
           url = output.image.url;
@@ -136,6 +153,8 @@ export function createFalUpscaler(client: FalLike, onProviderError?: (err: unkno
         if (signal.aborted) throw timeoutError();
         onProviderError?.(err);
         throw providerError();
+      } finally {
+        signal.removeEventListener('abort', cancelQueuedJob);
       }
     },
   };
