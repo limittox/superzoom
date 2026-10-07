@@ -105,3 +105,25 @@ Device: user's Samsung (Back Quad Camera, Android 16), Android dev builds `b6185
 | 100x, Creative | ✅ 37.1 s on the 128×275 upload (17.4 s on the 95×204 upload before 4.5), two Clarity passes (4x, then 2.5x), labeled "AI-reconstructed (Creative)" |
 | 100x lens choice | ⚠️ one 100x capture of a closer or dimmer subject used the 3x lens (7.9 mm); far, well-lit subjects used the 5x lens. The phone's choice, as with the telephoto change |
 | Night extension capabilities (`getExtensionInfo`) | ✅ night, bokeh and face-retouch honour `CONTROL_ZOOM_RATIO` over 0.6x–10x, largest JPEG 4080×3060; no capture latency reported. See the quality-gap item in `docs/follow-ups.md` |
+
+## Enhancement jobs survive app switching (change `enhance-job-api`)
+
+Device: user's Samsung (Back Quad Camera, Android 16), dev build `00fdc96e` with the dev server, 2026-10-08. Times are from the dev server log.
+
+| Check | Result |
+|---|---|
+| Switch apps during a 1x Enhance job | ✅ one SeedVR2 pass; the result was waiting on return (done 62 s after submission) |
+| Switch apps for over 2 minutes during a 30x Enhance job | ✅ done 3 min 17 s after submission; the finished pass wasn't timed out |
+| Lock the phone for about 3 minutes during a 100x Creative job | ✅ pass 1 queued at 00:31:07; pass 2 only after unlocking (00:34:07); done at 00:34:20 |
+| Switch apps for about 1.5 minutes during a 30x Pro job | ✅ pass 1 at 00:35:07, pass 2 (2.16x) on return at 00:36:42, done at 00:37:07; one job, one upload |
+| Cancel during a Pro job | ❌ → ✅ the first try left the job running with no `DELETE` reaching the server: Cancel aborted the upload request while the service still queued the job, so the app never had its ID. Fixed: the upload is no longer aborted by Cancel, and the job is cancelled once its ID arrives. Retest: `DELETE` HTTP 200, `cancelled` after 7.4 s, no further pass |
+| Leave the result screen during a Pro job | ✅ `DELETE` HTTP 200, `cancelled` after 5.5 s, no pass 2 |
+
+Retest after the review fixes (`8943e20`, `d8cc568`), 2026-10-08:
+
+| Check | Result |
+|---|---|
+| Submit after a dev-server hot reload | ❌ → ✅ both Pro submissions failed with `provider_error`: the dev server's shared in-memory job store was an instance from before the reload, without the new lock and cancel-flag methods. Fixed by versioning the shared store (`d8cc568`); the cancel-on-error fix stopped both orphaned passes |
+| Cancel during a Pro job | ✅ `DELETE` HTTP 200, `cancelled` after 6.7 s, no further pass |
+| Leave the result screen during a Pro job | ✅ `DELETE` HTTP 200, `cancelled` after 5.9 s |
+| Switch apps during a 30x Pro job | ✅ pass 1 at 01:42:25, pass 2 on return at 01:45:42, done at 01:46:09 (3 min 47 s in total) |

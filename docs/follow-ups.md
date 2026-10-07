@@ -19,10 +19,7 @@ Implemented and working on Android, but not verified:
 
 ## Fixes
 
-- **Enhancement is cancelled when switching apps** (reported 2026-10-07). Leaving the app mid-enhancement drops the request, and the result is lost. Likely cause: Android stops the app's network request in the background, the server sees the disconnect, and since `extreme-zoom-100x` it treats that as a cancel and cancels the fal job. Before that change the job finished on fal, but the app never received the result. Options:
-  - Switch `/api/enhance` to a job API (submit returns a job ID; the app polls, or resumes when it comes back), so work survives backgrounding. This is the asynchronous contract design.md listed as the fallback.
-  - Keep the request alive in the background with a foreground service or background task (Android-specific, and more fragile).
-  - Let the server finish a disconnected job and cache the result briefly for the app to fetch when it returns. This is simpler than a full job API, but means separating "user cancelled" from "app went to background".
+- ~~**Enhancement is cancelled when switching apps**~~ (reported 2026-10-07). Fixed 2026-10-08 by `enhance-job-api`: enhancement is a job on the service that the app polls, pauses in the background and resumes on return, so switching apps or locking the phone no longer loses the result (`docs/device-test-matrix.md`). Not covered: resuming after Android kills the app process, since the session is in memory.
 
 ## Ideas
 

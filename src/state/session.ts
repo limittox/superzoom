@@ -14,10 +14,22 @@ export interface EnhanceFailure {
   retryAt?: string;
 }
 
+/** Where a pending enhancement is: uploading, waiting in the provider's queue, enhancing, or on its second pass. */
+export type EnhancePhase = 'submitting' | 'queued' | 'processing' | 'finishing';
+
+/** What Retry needs to pick up where a request left off. */
+export interface RequestHandles {
+  /** The job, once the service has accepted it. */
+  jobId?: string;
+  /** The submission's ID; resubmitting with it returns the same job instead of starting another. */
+  requestId?: string;
+}
+
 export type RequestState =
   | { status: 'idle' }
-  | { status: 'pending'; id: number; mode: EnhanceMode }
-  | { status: 'error'; mode: EnhanceMode; error: EnhanceFailure };
+  | ({ status: 'pending'; id: number; mode: EnhanceMode; phase: EnhancePhase } & RequestHandles)
+  /** Handles are kept when the job may still exist (a network failure), so Retry resumes it. */
+  | ({ status: 'error'; mode: EnhanceMode; error: EnhanceFailure } & RequestHandles);
 
 interface SessionState {
   /** Full-resolution crop; used for the comparison and for saving. */
@@ -37,11 +49,13 @@ interface SessionState {
   aiReconstructed: boolean;
 
   startSession(original: LocalImage, upload: LocalImage, captureZoom: number, aiReconstructed?: boolean): void;
-  /** Returns a request ID; results for any other ID are ignored. */
-  beginRequest(mode: EnhanceMode): number;
+  /** Returns a request ID; results for any other ID are ignored. Pass a `jobId` to resume an existing job. */
+  beginRequest(mode: EnhanceMode, handles?: RequestHandles): number;
+  /** Updates a pending request's phase or job ID; ignored for a cancelled or superseded request. */
+  updateRequest(id: number, patch: { phase?: EnhancePhase; jobId?: string }): void;
   /** Returns false (and stores nothing) if the request was cancelled or superseded. */
   resolveRequest(id: number, mode: EnhanceMode, result: LocalImage): boolean;
-  failRequest(id: number, mode: EnhanceMode, error: EnhanceFailure): void;
+  failRequest(id: number, mode: EnhanceMode, error: EnhanceFailure, handles?: RequestHandles): void;
   cancelRequest(): void;
   showMode(mode: EnhanceMode): void;
   markSaved(what: { original?: boolean; enhancedMode?: EnhanceMode }): void;
@@ -49,6 +63,12 @@ interface SessionState {
 }
 
 let nextRequestId = 1;
+
+/** The handles that are set, so unset ones don't appear as `undefined` keys. */
+const defined = ({ jobId, requestId }: RequestHandles): RequestHandles => ({
+  ...(jobId ? { jobId } : {}),
+  ...(requestId ? { requestId } : {}),
+});
 
 const empty = {
   original: null,
@@ -68,10 +88,16 @@ export const useSession = create<SessionState>()((set, get) => ({
   startSession: (original, upload, captureZoom, aiReconstructed = false) =>
     set({ ...empty, original, upload, captureZoom, aiReconstructed }),
 
-  beginRequest: (mode) => {
+  beginRequest: (mode, handles = {}) => {
     const id = nextRequestId++;
-    set({ request: { status: 'pending', id, mode } });
+    set({ request: { status: 'pending', id, mode, phase: handles.jobId ? 'queued' : 'submitting', ...defined(handles) } });
     return id;
+  },
+
+  updateRequest: (id, patch) => {
+    const { request } = get();
+    if (request.status !== 'pending' || request.id !== id) return;
+    set({ request: { ...request, ...patch } });
   },
 
   resolveRequest: (id, mode, result) => {
@@ -81,14 +107,14 @@ export const useSession = create<SessionState>()((set, get) => ({
     return true;
   },
 
-  failRequest: (id, mode, error) => {
+  failRequest: (id, mode, error, handles = {}) => {
     const { request } = get();
     if (request.status !== 'pending' || request.id !== id) return;
-    set({ request: { status: 'error', mode, error } });
+    set({ request: { status: 'error', mode, error, ...defined(handles) } });
   },
 
   cancelRequest: () => {
-    if (get().request.status === 'pending') set({ request: { status: 'idle' } });
+    if (get().request.status !== 'idle') set({ request: { status: 'idle' } });
   },
 
   showMode: (mode) => {

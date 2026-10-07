@@ -6,8 +6,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { CompareView } from '@/components/CompareView';
 import { ConsentSheet } from '@/components/ConsentSheet';
 import { ModePicker } from '@/components/ModePicker';
-import { MODE_LABELS, RETRYABLE } from '@/enhance/messages';
+import { RETRYABLE } from '@/enhance/messages';
 import { resultLabel } from '@/enhance/resultLabel';
+import { progressLabel } from '@/enhance/progressLabel';
 import { enhancementRunner } from '@/enhance/runner';
 import { saveToGallery } from '@/media/saveToGallery';
 import type { EnhanceMode } from '@/shared/enhance';
@@ -88,7 +89,7 @@ export default function ResultScreen() {
     setMode(mode);
     if (results[mode]) {
       useSession.getState().showMode(mode);
-      if (request.status === 'pending') enhancementRunner.cancel();
+      if (request.status !== 'idle') enhancementRunner.cancel();
     } else {
       enhance(mode);
     }
@@ -198,7 +199,7 @@ export default function ResultScreen() {
         {request.status === 'pending' && (
           <View style={styles.status}>
             <ActivityIndicator color={colors.text} />
-            <Text style={styles.statusText}>Enhancing with {MODE_LABELS[request.mode].title}…</Text>
+            <Text style={styles.statusText}>{progressLabel(request.phase, request.mode)}</Text>
             <Pressable onPress={() => enhancementRunner.cancel()} accessibilityRole="button" hitSlop={8}>
               <Text style={styles.link}>Cancel</Text>
             </Pressable>

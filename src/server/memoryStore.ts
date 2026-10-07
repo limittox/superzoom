@@ -24,3 +24,12 @@ export function memoryStore(): SortedSetStore & { sets: Map<string, Map<string, 
     },
   };
 }
+
+/**
+ * The development rate-limit store. Each Expo Router API route is bundled separately, so it
+ * lives on `globalThis` for all routes to share one set of counters.
+ */
+export function sharedMemoryStore(): SortedSetStore {
+  const g = globalThis as { __superzoomRateLimitStore?: SortedSetStore };
+  return (g.__superzoomRateLimitStore ??= memoryStore());
+}
