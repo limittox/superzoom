@@ -3,7 +3,15 @@ import { useSession } from '@/state/session';
 
 import { File } from 'expo-file-system';
 
-import { cancelJob, downloadResult, EnhanceRequestError, enhanceUrl, getJob, submitJob } from '../client';
+import {
+  cancelJob,
+  cancelSubmission,
+  downloadResult,
+  EnhanceRequestError,
+  enhanceUrl,
+  getJob,
+  submitJob,
+} from '../client';
 import { ALL_FAILURE_CODES, failureMessage } from '../messages';
 import { createEnhancementRunner, type Foreground, type JobApi, phaseOf, POLL_TIMEOUT_MS } from '../runner';
 
@@ -156,6 +164,15 @@ describe('job client', () => {
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
     await expect(cancelJob('job-1')).resolves.toBeUndefined();
   });
+
+  it('cancels a submission by request ID', async () => {
+    global.fetch = respond(200, { requestId: 'req-1', status: 'cancelled' });
+    await cancelSubmission('0f8fad5b-d9cb-469f-a165-70867728950e');
+    expect((global.fetch as jest.Mock).mock.calls[0]).toEqual([
+      '/api/enhance?requestId=0f8fad5b-d9cb-469f-a165-70867728950e',
+      { method: 'DELETE', headers: { 'X-Install-Id': 'install-123' } },
+    ]);
+  });
 });
 
 describe('downloadResult', () => {
@@ -164,7 +181,11 @@ describe('downloadResult', () => {
 
   it('returns the downloaded file', async () => {
     const image = await downloadResult(result, new AbortController().signal);
-    expect(image).toEqual({ uri: expect.stringMatching(/^file:\/\/\/cache\/enhanced-enhance-/), width: 4000, height: 3000 });
+    expect(image).toEqual({
+      uri: expect.stringMatching(/^file:\/\/\/cache\/enhanced-enhance-/),
+      width: 4000,
+      height: 3000,
+    });
   });
 
   it('deletes the file when cancelled during the download', async () => {
@@ -239,6 +260,7 @@ describe('enhancement runner', () => {
         return next;
       }),
       cancel: jest.fn<Promise<void>, [string]>().mockResolvedValue(undefined),
+      cancelSubmission: jest.fn<Promise<void>, [string]>().mockResolvedValue(undefined),
       download: jest.fn(async (result: { url: string }) => img(result.url, 4000, 4000)),
     };
     const discard = jest.fn();
@@ -310,7 +332,10 @@ describe('enhancement runner', () => {
   });
 
   it('shows a result that finished while the app was away, without a new upload', async () => {
-    const { app, api, runner } = setup([status({ status: 'processing', pass: 1, passes: 1 }), done('https://fal.media/away.jpg')]);
+    const { app, api, runner } = setup([
+      status({ status: 'processing', pass: 1, passes: 1 }),
+      done('https://fal.media/away.jpg'),
+    ]);
     const run = runner.start('pro');
     await flush();
     app.background();
@@ -406,7 +431,8 @@ describe('enhancement runner', () => {
     await flush();
     api.get.mockResolvedValueOnce(done('https://fal.media/late.jpg'));
     api.download.mockImplementationOnce(
-      (result: { url: string }) => new Promise((resolve) => (finishDownload = () => resolve(img(result.url, 4000, 4000)))),
+      (result: { url: string }) =>
+        new Promise((resolve) => (finishDownload = () => resolve(img(result.url, 4000, 4000)))),
     );
     await jest.advanceTimersByTimeAsync(POLL);
     runner.cancel();
@@ -454,7 +480,11 @@ describe('enhancement runner', () => {
 
   /** A status check that, like fetch, only ends when its signal aborts. */
   const hangingGet = (_jobId: string, signal: AbortSignal) =>
-    new Promise<Status>((_, reject) => signal.addEventListener('abort', () => reject(new EnhanceRequestError({ code: 'cancelled', message: 'aborted' }))));
+    new Promise<Status>((_, reject) =>
+      signal.addEventListener('abort', () =>
+        reject(new EnhanceRequestError({ code: 'cancelled', message: 'aborted' })),
+      ),
+    );
 
   it('replaces a check that stalled while the app was away as soon as it returns, without failing', async () => {
     const { app, api, runner } = setup([status({ status: 'processing', pass: 1, passes: 1 })]);
@@ -499,7 +529,11 @@ describe('enhancement runner', () => {
     expect(useSession.getState().request).toMatchObject({ status: 'pending' });
     await jest.advanceTimersByTimeAsync(GRACE);
     await flush();
-    expect(useSession.getState().request).toMatchObject({ status: 'error', error: { code: 'network' }, jobId: 'job-1' });
+    expect(useSession.getState().request).toMatchObject({
+      status: 'error',
+      error: { code: 'network' },
+      jobId: 'job-1',
+    });
   });
 
   it('resubmits with the same request ID on Retry after a submission failed in the foreground', async () => {
@@ -537,6 +571,39 @@ describe('enhancement runner', () => {
     await runner.start('creative');
     expect(api.cancel).toHaveBeenCalledWith('job-1');
     expect(api.submit.mock.calls.at(-1)![2]).toBe('req-2');
+  });
+
+  it("doesn't declare a network failure while the app is away, even past the grace period", async () => {
+    const { app, api, runner } = setup([networkError()]);
+    void runner.start('pro');
+    await flush();
+    // Failing in the foreground for a while...
+    await jest.advanceTimersByTimeAsync(GRACE - 2 * POLL);
+    // ...then a check that fails while the app is away, well past the grace period.
+    let rejectCheck!: (err: Error) => void;
+    api.get.mockImplementationOnce(() => new Promise<Status>((_, reject) => (rejectCheck = reject)));
+    await jest.advanceTimersByTimeAsync(2 * POLL);
+    app.background();
+    await jest.advanceTimersByTimeAsync(60_000);
+    rejectCheck(networkError());
+    await flush();
+    expect(useSession.getState().request).toMatchObject({ status: 'pending' });
+    runner.cancel();
+  });
+
+  it('cancels by request ID when Cancel comes before the job ID arrived', async () => {
+    const { app, api, runner } = setup();
+    api.submit.mockImplementationOnce(async () => {
+      app.background();
+      throw networkError();
+    });
+    const run = runner.start('pro');
+    await flush();
+    // The lost upload waits for the app to return; the user cancels instead.
+    runner.cancel();
+    await run;
+    expect(api.cancelSubmission).toHaveBeenCalledWith('req-1');
+    expect(api.cancel).not.toHaveBeenCalled();
   });
 
   it('records failures reported by the job', async () => {

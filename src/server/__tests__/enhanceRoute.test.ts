@@ -130,6 +130,19 @@ describe('enhance API routes wiring', () => {
     expect(createFalClient.mock.results[0].value.queue.cancel).toHaveBeenCalled();
   });
 
+  it('cancels a submission by request ID through DELETE /api/enhance', async () => {
+    // Load the index route alone: both route files export DELETE.
+    const index = require('@/app/api/enhance/index+api') as typeof import('@/app/api/enhance/index+api');
+    const { jobId } = await (await index.POST(submitRequest())).json();
+    const res = await index.DELETE(
+      new Request('http://localhost/api/enhance?requestId=0f8fad5b-d9cb-469f-a165-70867728950e', {
+        method: 'DELETE',
+        headers: { [INSTALL_ID_HEADER]: INSTALL_ID },
+      }),
+    );
+    expect(await res.json()).toMatchObject({ jobId, status: 'cancelled' });
+  });
+
   it('never leaks the key when fal fails', async () => {
     createFalClient.mockReturnValue({
       ...fakeFal(),

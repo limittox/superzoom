@@ -10,6 +10,7 @@ import {
   INSTALL_ID_HEADER,
   isEnhanceError,
   jobPath,
+  submissionPath,
 } from '@/shared/enhance';
 import type { EnhanceFailure, LocalImage } from '@/state/session';
 import { getInstallId } from '@/state/settings';
@@ -89,18 +90,31 @@ export async function getJob(jobId: string, signal: AbortSignal): Promise<Enhanc
   );
 }
 
-/** Asks the service to cancel a job. Best effort: the app has already stopped waiting, so this never throws. */
-export async function cancelJob(jobId: string): Promise<void> {
+/** Sends a best-effort DELETE; the app has already stopped waiting, so this never throws. */
+async function sendCancel(path: string, what: string): Promise<void> {
   try {
     const installId = await getInstallId();
-    const response = await fetch(enhanceUrl(undefined, jobPath(jobId)), {
+    const response = await fetch(enhanceUrl(undefined, path), {
       method: 'DELETE',
       headers: { [INSTALL_ID_HEADER]: installId },
     });
-    if (__DEV__) console.log(`[enhance] cancel job ${jobId}: HTTP ${response.status}`);
+    if (__DEV__) console.log(`[enhance] cancel ${what}: HTTP ${response.status}`);
   } catch (err) {
-    if (__DEV__) console.warn('[enhance] cancelling the job failed:', err);
+    if (__DEV__) console.warn(`[enhance] cancelling ${what} failed:`, err);
   }
+}
+
+/** Asks the service to cancel a job. Never throws. */
+export function cancelJob(jobId: string): Promise<void> {
+  return sendCancel(jobPath(jobId), `job ${jobId}`);
+}
+
+/**
+ * Asks the service to cancel a submission whose job ID never arrived (its response was lost).
+ * The service cancels the job if it exists, and otherwise won't start one for that request ID.
+ */
+export function cancelSubmission(requestId: string): Promise<void> {
+  return sendCancel(submissionPath(requestId), `submission ${requestId}`);
 }
 
 /** Deletes a cached file, ignoring files that are already gone. */

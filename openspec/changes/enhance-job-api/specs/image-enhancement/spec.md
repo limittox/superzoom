@@ -43,6 +43,10 @@ When the app cancels a job, or a provider pass times out, the service SHALL stop
 - **WHEN** the app's connection drops or the app goes to the background while a job is running
 - **THEN** the job keeps running and its result is available when the app asks for it
 
+#### Scenario: Cancelled before the job ID arrived
+- **WHEN** the app cancels a submission by its client request ID because the response with the job ID was lost
+- **THEN** the service cancels that submission's job if it exists, and otherwise starts no job for that request ID
+
 ## ADDED Requirements
 
 ### Requirement: Job status and result

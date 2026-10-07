@@ -4,7 +4,16 @@ import { AppState } from 'react-native';
 import type { EnhanceJobStatus, EnhanceMode, EnhanceSuccess } from '@/shared/enhance';
 import { type EnhanceFailure, type EnhancePhase, type LocalImage, useSession } from '@/state/session';
 
-import { cancelJob, deleteLocalFile, downloadResult, EnhanceRequestError, fail, getJob, submitJob } from './client';
+import {
+  cancelJob,
+  cancelSubmission,
+  deleteLocalFile,
+  downloadResult,
+  EnhanceRequestError,
+  fail,
+  getJob,
+  submitJob,
+} from './client';
 import { failureMessage } from './messages';
 
 /** How often a running job is checked while the app is in the foreground. */
@@ -20,6 +29,8 @@ export interface JobApi {
   submit(upload: LocalImage, mode: EnhanceMode, requestId: string, signal: AbortSignal): Promise<string>;
   get(jobId: string, signal: AbortSignal): Promise<EnhanceJobStatus>;
   cancel(jobId: string): Promise<void>;
+  /** Cancels by request ID when the job ID never arrived. */
+  cancelSubmission(requestId: string): Promise<void>;
   download(result: EnhanceSuccess, signal: AbortSignal): Promise<LocalImage>;
 }
 
@@ -39,7 +50,13 @@ const appStateForeground: Foreground = {
   },
 };
 
-const defaultApi: JobApi = { submit: submitJob, get: getJob, cancel: cancelJob, download: downloadResult };
+const defaultApi: JobApi = {
+  submit: submitJob,
+  get: getJob,
+  cancel: cancelJob,
+  cancelSubmission,
+  download: downloadResult,
+};
 
 export interface RunnerOptions {
   api?: JobApi;
@@ -174,7 +191,9 @@ export function createEnhancementRunner({
           // through short outages; a job that no longer exists ends the run.
           const transient = isNetworkFailure(err) || check.signal.aborted;
           if (!transient) throw err;
-          if (now() - lastSuccess >= networkGraceMs) throw fail('network');
+          // Only foreground time counts: a failure that lands while the app is away waits for the
+          // return, which restarts the grace period.
+          if (foreground.isActive() && now() - lastSuccess >= networkGraceMs) throw fail('network');
         } finally {
           clearTimeout(timer);
           signal.removeEventListener('abort', stop);
@@ -233,6 +252,9 @@ export function createEnhancementRunner({
         // A result for a cancelled or superseded request is never shown; don't leave it in the cache.
         if (!resolveRequest(id, mode, result)) discard(result.uri);
       } catch (err) {
+        // Cancelled before the job ID arrived (e.g. while a lost upload waited to be resent): the
+        // service may have created the job anyway, so cancel it by request ID.
+        if (signal.aborted && !jobId) void api.cancelSubmission(requestId);
         const failure: EnhanceFailure =
           err instanceof EnhanceRequestError
             ? err.failure

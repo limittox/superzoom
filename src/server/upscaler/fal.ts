@@ -108,8 +108,8 @@ interface FalImageOutput {
 /** fal drops a queued pass that hasn't started within this many seconds, even if nobody polls. */
 const PASS_START_TIMEOUT_S = LIMITS.providerTimeoutMs / 1000;
 /**
- * Each fal call in a status check gives up after this long, so one advance (status, result and
- * submit) always finishes well inside the job lock (`JOB_LOCK_MS`).
+ * Each fal call in a status check gives up after this long (a submit is aborted), so one advance
+ * (status, result and submit) always finishes well inside the job lock (`JOB_LOCK_MS`).
  */
 export const FAL_CALL_TIMEOUT_MS = 15_000;
 
@@ -152,13 +152,14 @@ export function createFalUpscaler(
     if (process.env.NODE_ENV !== 'production') {
       console.info(`[fal] ${mode} pass ${index + 1}/${passes.length}: ${spec.endpoint} at ${passes[index].toFixed(2)}x`);
     }
-    const queued = await bounded(
-      client.queue.submit(spec.endpoint, {
-        input: spec.buildInput(sourceUrl, passes[index]),
-        startTimeout: PASS_START_TIMEOUT_S,
-        storageSettings: { expiresIn: OBJECT_EXPIRY },
-      }),
-    );
+    // Aborted rather than abandoned on timeout: walking away from a submit fal still accepts
+    // would leave a paid pass with no handle to cancel it.
+    const queued = await client.queue.submit(spec.endpoint, {
+      input: spec.buildInput(sourceUrl, passes[index]),
+      startTimeout: PASS_START_TIMEOUT_S,
+      storageSettings: { expiresIn: OBJECT_EXPIRY },
+      abortSignal: AbortSignal.timeout(FAL_CALL_TIMEOUT_MS),
+    });
     // A pass's time starts when fal has it, not before a slow upload or status check.
     return { providerRequestId: queued.request_id, passQueuedAt: now() };
   }

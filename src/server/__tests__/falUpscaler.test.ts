@@ -83,6 +83,8 @@ describe('fal upscaler: start', () => {
     expect(options.storageSettings).toEqual({ expiresIn: '1h' });
     // fal drops a pass that never starts, even if no one polls again.
     expect(options.startTimeout).toBe(LIMITS.providerTimeoutMs / 1000);
+    // A slow submit is aborted rather than abandoned, so no pass is left without a handle.
+    expect(options.abortSignal).toBeInstanceOf(AbortSignal);
     expect(started).toMatchObject({
       providerRequestId: 'fal-1',
       sourceUrl: 'https://fal.media/in.jpg',

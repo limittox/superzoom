@@ -31,8 +31,8 @@ export interface EnhanceHandlerDeps {
   log?: (event: LogEvent) => void;
   now?: () => number;
   newId?: () => string;
-  /** How long `DELETE` waits for a concurrent status check to release the job (default: the lock's lifetime). */
-  cancelLockWaitMs?: number;
+  /** How long a cancel or a finishing submission waits for another request to release the job (default: the lock's lifetime). */
+  lockWaitMs?: number;
 }
 
 const INSTALL_ID_PATTERN = /^[A-Za-z0-9-]{8,128}$/;
@@ -150,6 +150,14 @@ function toStatus(job: JobRecord): EnhanceJobStatus {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * Claimed in place of a job ID when the app cancels a submission before learning its job, so a
+ * submission still in flight with that request ID doesn't start one.
+ */
+const CANCELLED_REQUEST = 'cancelled';
+const submissionCancelled = () =>
+  new ApiError('job_not_found', 'This enhancement was cancelled before it started.', 404);
+
+/**
  * The job API (enhance-job-api design decisions 1–5): `submit` starts a job and returns its ID;
  * `status` advances the job one step and reports it; `cancel` stops it. Nothing runs between
  * requests, so the same handlers work on the dev server and on EAS Hosting.
@@ -164,7 +172,7 @@ export function createEnhanceHandlers({
   log = (event) => console.info(JSON.stringify(event)),
   now = Date.now,
   newId = () => crypto.randomUUID(),
-  cancelLockWaitMs = JOB_LOCK_MS,
+  lockWaitMs = JOB_LOCK_MS,
 }: EnhanceHandlerDeps) {
   const logEnd = (job: JobRecord) =>
     log({
@@ -201,14 +209,42 @@ export function createEnhanceHandlers({
 
   /**
    * Cancels an active job: drops its provider work and saves it as cancelled. Call with the lock
-   * held and the cancel flag set, so a failed save is still recorded by the next check.
+   * held and the cancel flag set: if the save fails, the next check sees the flag and tries again,
+   * and the job is logged once, when the save succeeds.
    */
   async function cancelLocked(jobs: JobStore, job: JobRecord): Promise<JobRecord> {
     await getUpscaler().cancel(job);
     const cancelled: JobRecord = { ...job, status: 'cancelled' };
-    await jobs.put(cancelled).catch(() => {});
+    await guarded(() => jobs.put(cancelled));
     logEnd(cancelled);
     return cancelled;
+  }
+
+  /** Takes the job's lock, waiting up to `lockWaitMs` for another request to release it. */
+  async function acquire(jobs: JobStore, id: string): Promise<string | null> {
+    const deadline = now() + lockWaitMs;
+    let token = await guarded(() => jobs.lock(id));
+    while (!token && now() < deadline) {
+      await sleep(100);
+      token = await guarded(() => jobs.lock(id));
+    }
+    return token;
+  }
+
+  /** Cancels one of the caller's jobs (a `DELETE` by job ID or by request ID). */
+  async function cancelJob(jobs: JobStore, job: JobRecord): Promise<JobRecord> {
+    if (!isActive(job)) return job;
+    // Whoever holds the lock now acts on this before saving, so no pass can start afterwards.
+    await guarded(() => jobs.requestCancel(job.id, job.createdAt));
+    // Wait for a concurrent request to finish (at most the lock's lifetime), then cancel here.
+    const token = await acquire(jobs, job.id);
+    if (!token) return { ...job, status: 'cancelled' };
+    try {
+      const stored = (await guarded(() => jobs.get(job.id))) ?? job;
+      return isActive(stored) ? await cancelLocked(jobs, stored) : stored;
+    } finally {
+      await jobs.unlock(job.id, token).catch(() => {});
+    }
   }
 
   const fail = (err: unknown) => errorResponse(err instanceof ApiError ? err : providerError());
@@ -247,6 +283,7 @@ export function createEnhanceHandlers({
         const created = (jobId: string) => Response.json({ jobId } satisfies EnhanceJobCreated, { status: 202 });
         // A resubmission (the app lost the first response) gets the same job, without another charge.
         const existing = await guarded(() => jobs.findRequest(installId, requestId));
+        if (existing === CANCELLED_REQUEST) throw submissionCancelled();
         if (existing) return created(existing);
 
         const limit = await guarded(() => getRateLimiter().check(installId));
@@ -270,36 +307,50 @@ export function createEnhanceHandlers({
         };
         await guarded(() => jobs.put(pending));
         const winner = await guarded(() => jobs.claimRequest(installId, requestId, pending.id, createdAt));
+        if (winner === CANCELLED_REQUEST) throw submissionCancelled();
         if (winner !== pending.id) return created(winner);
 
-        const token = await guarded(() => jobs.lock(pending.id));
+        // The upload runs without the lock, so a slow one can't outlive it. Polls meanwhile see
+        // the job as queued; a cancel or a timeout meanwhile ends it, and the new pass is dropped.
+        const upscaler = getUpscaler();
+        let job: JobRecord;
         try {
-          let job: JobRecord;
-          try {
-            const first = await getUpscaler().start({
-              image: new Blob([bytes as BlobPart], { type: image.contentType }),
-              width: image.width,
-              height: image.height,
-              mode,
-            });
-            job = { ...pending, ...first };
-          } catch (err) {
-            // The job never started: record why for anyone polling it, and let a retry with the
-            // same request ID start over.
-            const apiError = err instanceof ApiError ? err : providerError();
-            await jobs
-              .put({ ...pending, status: 'failed', error: { code: apiError.code, message: apiError.message } })
-              .catch(() => {});
-            await jobs.releaseRequest(installId, requestId).catch(() => {});
-            throw apiError;
-          }
-          if (await guarded(() => jobs.isCancelRequested(job.id))) {
+          const first = await upscaler.start({
+            image: new Blob([bytes as BlobPart], { type: image.contentType }),
+            width: image.width,
+            height: image.height,
+            mode,
+          });
+          job = { ...pending, ...first };
+        } catch (err) {
+          // The job never started: record why for anyone polling it, and let a retry with the
+          // same request ID start over.
+          const apiError = err instanceof ApiError ? err : providerError();
+          await jobs
+            .put({ ...pending, status: 'failed', error: { code: apiError.code, message: apiError.message } })
+            .catch(() => {});
+          await jobs.releaseRequest(installId, requestId).catch(() => {});
+          throw apiError;
+        }
+
+        const token = await acquire(jobs, pending.id).catch(() => null);
+        if (!token) {
+          await upscaler.cancel(job);
+          throw unavailable();
+        }
+        try {
+          const stored = await guarded(() => jobs.get(pending.id));
+          const waiting = stored && isActive(stored) && !stored.providerRequestId;
+          if (!waiting) {
+            // Cancelled, timed out or expired during the upload: the new pass is no longer wanted.
+            await upscaler.cancel(job);
+          } else if (await guarded(() => jobs.isCancelRequested(pending.id))) {
             await cancelLocked(jobs, job);
           } else {
             await save(jobs, job, pending);
           }
         } finally {
-          if (token) await jobs.unlock(pending.id, token).catch(() => {});
+          await jobs.unlock(pending.id, token).catch(() => {});
         }
         return created(pending.id);
       } catch (err) {
@@ -328,7 +379,9 @@ export function createEnhanceHandlers({
               const next = await getUpscaler().advance(job);
               // A cancel that arrived while the provider was being asked wins, including over a
               // pass that was just queued.
-              if (isActive(next) && (await guarded(() => jobs.isCancelRequested(job.id)))) {
+              // If the flag can't be read, save first: the next check sees the flag and cancels.
+              const cancelRequested = isActive(next) && (await jobs.isCancelRequested(job.id).catch(() => false));
+              if (cancelRequested) {
                 job = await cancelLocked(jobs, next);
               } else if (JSON.stringify(next) !== JSON.stringify(job)) {
                 // Most polls change nothing; skip the write then.
@@ -350,26 +403,31 @@ export function createEnhanceHandlers({
     /** DELETE /api/enhance/{jobId}: cancels the job and its queued provider work. */
     async cancel(request: Request, jobId: string | undefined): Promise<Response> {
       try {
-        let job = await ownJob(request, jobId);
-        if (!isActive(job)) return Response.json(toStatus(job));
+        const job = await ownJob(request, jobId);
+        return Response.json(toStatus(await cancelJob(getJobStore(), job)));
+      } catch (err) {
+        return fail(err);
+      }
+    },
+
+    /**
+     * DELETE /api/enhance?requestId=…: cancels a submission whose job ID the app never received
+     * (its response was lost). Cancels the job if it exists; otherwise makes sure a submission
+     * still in flight with that request ID won't start one.
+     */
+    async cancelSubmission(request: Request): Promise<Response> {
+      try {
+        const installId = readInstallId(request);
+        const requestId = new URL(request.url).searchParams.get(FORM_FIELDS.requestId) ?? '';
+        if (!REQUEST_ID_PATTERN.test(requestId)) {
+          throw badRequest(`A "${FORM_FIELDS.requestId}" query parameter with a UUID is required.`);
+        }
         const jobs = getJobStore();
-        // Whoever holds the lock now acts on this before saving, so no pass can start afterwards.
-        await guarded(() => jobs.requestCancel(job.id, job.createdAt));
-        // Wait for a concurrent request to finish (at most the lock's lifetime), then cancel here.
-        const deadline = now() + cancelLockWaitMs;
-        let token = await guarded(() => jobs.lock(job.id));
-        while (!token && now() < deadline) {
-          await sleep(100);
-          token = await guarded(() => jobs.lock(job.id));
-        }
-        if (!token) return Response.json(toStatus({ ...job, status: 'cancelled' }));
-        try {
-          const stored = (await guarded(() => jobs.get(job.id))) ?? job;
-          job = isActive(stored) ? await cancelLocked(jobs, stored) : stored;
-        } finally {
-          await jobs.unlock(job.id, token).catch(() => {});
-        }
-        return Response.json(toStatus(job));
+        const winner = await guarded(() => jobs.claimRequest(installId, requestId, CANCELLED_REQUEST, now()));
+        if (winner === CANCELLED_REQUEST) return Response.json({ requestId, status: 'cancelled' });
+        const job = await guarded(() => jobs.get(winner));
+        if (!job || job.installId !== installId) return Response.json({ requestId, status: 'cancelled' });
+        return Response.json(toStatus(await cancelJob(jobs, job)));
       } catch (err) {
         return fail(err);
       }

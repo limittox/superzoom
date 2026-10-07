@@ -19,6 +19,11 @@ export function jobPath(jobId: string): string {
   return `${ENHANCE_PATH}/${encodeURIComponent(jobId)}`;
 }
 
+/** Path to cancel a submission by its request ID (DELETE), when its job ID never arrived. */
+export function submissionPath(requestId: string): string {
+  return `${ENHANCE_PATH}?requestId=${encodeURIComponent(requestId)}`;
+}
+
 /** Multipart form field names. `requestId` is a client-generated UUID that makes resubmitting safe. */
 export const FORM_FIELDS = {
   image: 'image',

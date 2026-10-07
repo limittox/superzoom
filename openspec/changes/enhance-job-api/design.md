@@ -57,10 +57,11 @@ Each `GET /api/enhance/{id}` **advances** the job before answering:
 ### 3. One change at a time per job
 Overlapping requests (a pause-and-resume race, two screens, or a cancel during a status check) could otherwise queue pass 2 twice or resurrect a cancelled job.
 - **The lock:** every change to an active job happens under `job:{id}:lock`, taken with `SET NX PX 60000` and an owner token. It's released with a compare-and-delete script, so an expired lock that someone else has since taken is never released by the old holder.
-- **Bounded fal calls:** each fal call in an advance gives up after 15 s, so an advance always ends inside the lock. A slow result fetch is retried on the next poll.
+- **Bounded fal calls:** each fal call in an advance gives up after 15 s, so an advance always ends inside the lock. A slow result fetch is retried on the next poll. A slow submit is aborted (fal's `abortSignal`) rather than abandoned, because fal accepting an abandoned submit would leave a paid pass with no handle.
 - **Polls without the lock** answer from the stored record without advancing.
 - **Cancel:** `DELETE` first sets `job:{id}:cancel`, then waits for the lock (at most its lifetime) and cancels. A status check holding the lock checks the flag before and after asking fal. If set, it cancels whatever pass is active, including one it just queued, and saves the job as cancelled.
-- **Failed saves:** if saving a job with a newly queued pass fails, that pass is cancelled, because its handle would otherwise be lost.
+- **Failed saves:** if saving a job with a newly queued pass fails, that pass is cancelled, because its handle would otherwise be lost. If the cancel flag can't be read after advancing, the job is saved first, and the next check acts on the flag.
+- **Cancels are logged once,** when the cancelled job is saved. A failed save leaves the flag set, so the next check retries it.
 
 ### 4. Submit order and idempotency
 `POST` runs in this order:
@@ -68,8 +69,10 @@ Overlapping requests (a pause-and-resume race, two screens, or a cancel during a
 2. Look up `jobreq:` and return the existing job ID if found. A repeat doesn't count against the rate limit.
 3. Rate limit.
 4. Save the job record (`queued`, no provider handle yet) **before** `claimRequest` (`SET NX`). A resubmission during the upload gets this ID, and its polls must find the job: it reports `queued` until the upload finishes. If another identical submit won the claim, return its job ID; this one has already used a rate-limit slot, which is rare and acceptable.
-5. Under the job's lock, upload to fal and submit pass 1.
-6. Store the fal request ID (or cancel at once if a cancel arrived meanwhile) and respond `202 { jobId }`.
+5. Upload to fal and submit pass 1, without the lock, so a slow upload can't outlive it.
+6. Take the lock and save the fal request ID, but only if the stored job is still waiting for its first pass. If it was cancelled, timed out or expired during the upload, cancel the new pass instead. Then respond `202 { jobId }`.
+
+**Cancel by request ID.** If the app is cancelled before it learns the job ID (a lost upload waiting to be resent), it sends `DELETE /api/enhance?requestId=…`. The service claims that request ID with a "cancelled" marker. If a job already holds the claim, the job is cancelled. Otherwise a submission still in flight with that request ID loses the claim and starts nothing (`404 job_not_found`).
 
 A job whose submission never finished (for example, the server stopped mid-upload) times out 120 s after creation. A pass's 120 s start when fal accepts it, not before the upload or status check that led to it.
 

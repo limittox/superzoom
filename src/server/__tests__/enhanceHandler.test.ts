@@ -50,7 +50,7 @@ function setup({ limit = 50 } = {}) {
     log: (e) => logs.push(e),
     now: () => clock.now,
     newId: () => `job-${++ids}`,
-    cancelLockWaitMs: 0,
+    lockWaitMs: 0,
   });
   return { fal, logs, handlers, jobs, clock };
 }
@@ -341,6 +341,47 @@ describe('races between submissions, status checks and cancels', () => {
     expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 2 });
   });
 
+  it('keeps a just-queued pass when the cancel flag cannot be read after advancing', async () => {
+    const { handlers, fal, jobs } = setup();
+    const jobId = await submitted(handlers, { mode: 'pro', image: makeJpeg(128, 275) });
+    jest
+      .spyOn(jobs, 'isCancelRequested')
+      .mockResolvedValueOnce(false)
+      .mockRejectedValueOnce(new Error('redis timeout'));
+    expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 2 });
+    expect(fal.queue.cancel).not.toHaveBeenCalled();
+    expect((await jobs.get(jobId))!.providerRequestId).toBe('fal-2');
+  });
+
+  it('drops the new pass when the job timed out during a slow upload, without reviving it', async () => {
+    const { handlers, fal, clock } = setup();
+    const release = hold(fal.storage.upload, () => 'https://fal.media/in.jpg');
+    const submit = call(handlers.submit, makeRequest({ mode: 'pro' }));
+    await tick();
+    clock.now += LIMITS.providerTimeoutMs + 1;
+    expect((await poll(handlers, 'job-1')).body).toMatchObject({ status: 'failed', error: { code: 'timeout' } });
+
+    release();
+    expect((await submit).body).toEqual({ jobId: 'job-1' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
+    expect((await poll(handlers, 'job-1')).body).toMatchObject({ status: 'failed', error: { code: 'timeout' } });
+  });
+
+  it('logs a cancel once, when its save succeeds, retrying a failed save on the next check', async () => {
+    const { handlers, jobs, logs } = setup();
+    const jobId = await submitted(handlers, { mode: 'pro' });
+    const put = jobs.put.bind(jobs);
+    const spy = jest.spyOn(jobs, 'put').mockRejectedValueOnce(new Error('redis down'));
+    const res = await call((r) => handlers.cancel(r, jobId), jobRequest(jobId, 'DELETE'));
+    expect(res.status).toBe(503);
+    expect(logs.filter((l) => l.outcome === 'cancelled')).toHaveLength(0);
+
+    spy.mockImplementation(put);
+    expect((await poll(handlers, jobId)).body.status).toBe('cancelled');
+    expect((await poll(handlers, jobId)).body.status).toBe('cancelled');
+    expect(logs.filter((l) => l.outcome === 'cancelled')).toHaveLength(1);
+  });
+
   it('times out a job whose submission never finished (e.g. the server stopped mid-upload)', async () => {
     const { handlers, jobs, clock, logs } = setup();
     await jobs.put({
@@ -484,6 +525,41 @@ describe('GET /api/enhance/{jobId} (status)', () => {
     const jobId = await submitted(handlers);
     const res = await call((r) => handlers.status(r, jobId), new Request(`http://localhost${ENHANCE_PATH}/${jobId}`));
     expect(res.body.error.code).toBe('missing_install_id');
+  });
+});
+
+describe('DELETE /api/enhance?requestId= (cancel a submission)', () => {
+  const cancelRequest = (requestId = REQUEST_ID, installId = INSTALL_ID) =>
+    new Request(`http://localhost${ENHANCE_PATH}?requestId=${requestId}`, {
+      method: 'DELETE',
+      headers: { [INSTALL_ID_HEADER]: installId },
+    });
+
+  it('stops a submission that has not created its job yet from starting one', async () => {
+    const { handlers, fal } = setup();
+    const res = await call(handlers.cancelSubmission, cancelRequest());
+    expect(res.body).toEqual({ requestId: REQUEST_ID, status: 'cancelled' });
+    const late = await call(handlers.submit, makeRequest());
+    expect(late.status).toBe(404);
+    expect(fal.storage.upload).not.toHaveBeenCalled();
+  });
+
+  it('cancels the job a lost submission created', async () => {
+    const { handlers, fal } = setup();
+    const jobId = await submitted(handlers, { mode: 'pro' });
+    const res = await call(handlers.cancelSubmission, cancelRequest());
+    expect(res.body).toMatchObject({ jobId, status: 'cancelled' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
+  });
+
+  it("doesn't touch another installation's job and requires a UUID", async () => {
+    const { handlers, fal } = setup();
+    await submitted(handlers);
+    expect((await call(handlers.cancelSubmission, cancelRequest(REQUEST_ID, OTHER_INSTALL))).body.status).toBe(
+      'cancelled',
+    );
+    expect(fal.queue.cancel).not.toHaveBeenCalled();
+    expect((await call(handlers.cancelSubmission, cancelRequest('nope'))).body.error.code).toBe('bad_request');
   });
 });
 
