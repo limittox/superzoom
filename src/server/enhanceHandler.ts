@@ -17,7 +17,7 @@ import { validateImage } from './validate';
 /** Structured log line. Never contains image data or credentials. */
 export type LogEvent = {
   event: 'enhance';
-  outcome: 'ok' | EnhanceErrorCode;
+  outcome: 'ok' | 'cancelled' | EnhanceErrorCode;
   mode?: EnhanceMode;
   ms: number;
 };
@@ -148,6 +148,11 @@ export function createEnhanceHandler({
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      // If the app cancels or disconnects, stop too, so queued provider jobs get cancelled
+      // instead of running (and billing) for nobody (spec: Abandoned requests stop provider work).
+      const onClientAbort = () => controller.abort();
+      if (request.signal?.aborted) controller.abort();
+      request.signal?.addEventListener('abort', onClientAbort, { once: true });
       let result;
       try {
         result = await getUpscaler().upscale({
@@ -159,6 +164,7 @@ export function createEnhanceHandler({
         });
       } finally {
         clearTimeout(timer);
+        request.signal?.removeEventListener('abort', onClientAbort);
       }
 
       log({ event: 'enhance', outcome: 'ok', mode, ms: Date.now() - started });
@@ -166,7 +172,9 @@ export function createEnhanceHandler({
       return Response.json(body);
     } catch (err) {
       const apiError = err instanceof ApiError ? err : providerError();
-      log({ event: 'enhance', outcome: apiError.code, mode, ms: Date.now() - started });
+      // Nobody is waiting for a cancelled request's response; log it as such rather than as a timeout.
+      const outcome = request.signal?.aborted ? 'cancelled' : apiError.code;
+      log({ event: 'enhance', outcome, mode, ms: Date.now() - started });
       return errorResponse(apiError);
     }
   };

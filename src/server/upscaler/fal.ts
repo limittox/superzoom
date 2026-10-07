@@ -11,7 +11,25 @@ const OBJECT_EXPIRY = '1h' as const;
 
 interface ModelSpec {
   endpoint: string;
+  /** Largest `upscale_factor` the model accepts in one request. */
+  maxFactorPerPass: number;
   buildInput(imageUrl: string, factor: number): Record<string, unknown>;
+}
+
+/**
+ * Splits a total upscale factor into per-request factors for a model capped at
+ * `maxPerPass`: full-strength passes first, then the remainder (always > 1).
+ * extreme-zoom-100x design decision 4.
+ */
+export function planPasses(factor: number, maxPerPass: number): number[] {
+  const passes: number[] = [];
+  let remaining = factor;
+  while (remaining > maxPerPass * (1 + 1e-9)) {
+    passes.push(maxPerPass);
+    remaining /= maxPerPass;
+  }
+  passes.push(remaining);
+  return passes;
 }
 
 /**
@@ -21,6 +39,7 @@ interface ModelSpec {
 export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
   enhance: {
     endpoint: 'fal-ai/seedvr/upscale/image',
+    maxFactorPerPass: 10,
     buildInput: (imageUrl, factor) => ({
       image_url: imageUrl,
       upscale_mode: 'factor',
@@ -30,6 +49,7 @@ export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
   },
   pro: {
     endpoint: 'fal-ai/topaz/upscale/image',
+    maxFactorPerPass: 4,
     buildInput: (imageUrl, factor) => ({
       image_url: imageUrl,
       model: 'High Fidelity V2',
@@ -40,6 +60,7 @@ export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
   },
   creative: {
     endpoint: 'fal-ai/clarity-upscaler',
+    maxFactorPerPass: 4,
     buildInput: (imageUrl, factor) => ({
       image_url: imageUrl,
       upscale_factor: factor,
@@ -47,7 +68,7 @@ export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
   },
 };
 
-type FalLike = Pick<FalClient, 'storage' | 'subscribe'>;
+type FalLike = Pick<FalClient, 'storage' | 'subscribe' | 'queue'>;
 
 interface FalImageOutput {
   image?: { url?: string; width?: number; height?: number };
@@ -83,31 +104,57 @@ export function createFalUpscaler(client: FalLike, onProviderError?: (err: unkno
       // Keep an unobserved rejection from surfacing when the request finishes first.
       aborted.catch(() => {});
 
+      // fal's abortSignal only stops this client waiting; the job stays queued on fal and keeps
+      // billing. On abort (app cancel, disconnect or timeout), cancel the job still in the queue.
+      let queuedRequestId: string | undefined;
+      const cancelQueuedJob = () => {
+        if (!queuedRequestId) return;
+        client.queue?.cancel(spec.endpoint, { requestId: queuedRequestId }).catch(() => {});
+      };
+      signal.addEventListener('abort', cancelQueuedJob, { once: true });
+
       try {
         const imageUrl = await Promise.race([
           client.storage.upload(image, { lifecycle: { expiresIn: OBJECT_EXPIRY } }),
           aborted,
         ]);
-        const result = await Promise.race([
-          client.subscribe(spec.endpoint, {
-            input: spec.buildInput(imageUrl, plan.factor),
-            abortSignal: signal,
-            storageSettings: { expiresIn: OBJECT_EXPIRY },
-          }),
-          aborted,
-        ]);
-        const output = result.data as FalImageOutput;
-        if (!output.image?.url) throw providerError();
+        // Models capped below the planned factor get a second pass on the first pass's output.
+        // Both passes share the request's abort signal, so the overall timeout covers them together.
+        let url = imageUrl;
+        let output: FalImageOutput = {};
+        const passes = planPasses(plan.factor, spec.maxFactorPerPass);
+        for (const [i, factor] of passes.entries()) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.info(`[fal] ${mode} pass ${i + 1}/${passes.length}: ${spec.endpoint} at ${factor.toFixed(2)}x`);
+          }
+          const result = await Promise.race([
+            client.subscribe(spec.endpoint, {
+              input: spec.buildInput(url, factor),
+              abortSignal: signal,
+              storageSettings: { expiresIn: OBJECT_EXPIRY },
+              onEnqueue: (requestId) => {
+                queuedRequestId = requestId;
+              },
+            }),
+            aborted,
+          ]);
+          queuedRequestId = undefined;
+          output = result.data as FalImageOutput;
+          if (!output.image?.url) throw providerError();
+          url = output.image.url;
+        }
         return {
-          url: output.image.url,
-          width: output.image.width ?? plan.outputWidth,
-          height: output.image.height ?? plan.outputHeight,
+          url,
+          width: output.image?.width ?? plan.outputWidth,
+          height: output.image?.height ?? plan.outputHeight,
         };
       } catch (err) {
         if (err instanceof ApiError) throw err;
         if (signal.aborted) throw timeoutError();
         onProviderError?.(err);
         throw providerError();
+      } finally {
+        signal.removeEventListener('abort', cancelQueuedJob);
       }
     },
   };

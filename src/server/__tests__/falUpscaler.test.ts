@@ -1,7 +1,7 @@
 import { createFalClient } from '@fal-ai/client';
 
 import { ApiError } from '../errors';
-import { createDefaultFalUpscaler, createFalUpscaler, describeProviderError, MODEL_TABLE } from '../upscaler/fal';
+import { createDefaultFalUpscaler, createFalUpscaler, describeProviderError, MODEL_TABLE, planPasses } from '../upscaler/fal';
 
 jest.mock('@fal-ai/client', () => ({ createFalClient: jest.fn() }));
 
@@ -9,6 +9,7 @@ function fakeFal(output: unknown = { image: { url: 'https://fal.media/out.jpg' }
   return {
     storage: { upload: jest.fn().mockResolvedValue('https://fal.media/in.jpg'), transformInput: jest.fn() },
     subscribe: jest.fn().mockResolvedValue({ data: output, requestId: 'req-1' }),
+    queue: { cancel: jest.fn().mockResolvedValue(undefined) },
   };
 }
 
@@ -119,5 +120,110 @@ describe('describeProviderError', () => {
     const text = describeProviderError(err, [key]);
     expect(text.length).toBeLessThanOrEqual(500);
     expect(text).not.toContain('fal-key-0123');
+  });
+});
+
+describe('extreme-zoom upscaling (two passes for 4x models)', () => {
+  // A 100x crop from the Samsung: 94x204 px, planned factor 10.
+  const tiny = (mode: 'enhance' | 'pro' | 'creative') => request(mode, 94, 204);
+  const passOutputs = (fal: ReturnType<typeof fakeFal>) =>
+    fal.subscribe
+      .mockResolvedValueOnce({ data: { image: { url: 'https://fal.media/pass1.jpg' } }, requestId: 'r1' })
+      .mockResolvedValueOnce({ data: { image: { url: 'https://fal.media/pass2.jpg' } }, requestId: 'r2' });
+
+  it('splits factors into passes the model accepts', () => {
+    expect(planPasses(10, 10)).toEqual([10]);
+    expect(planPasses(10, 4)).toEqual([4, 2.5]);
+    expect(planPasses(3.2, 4)).toEqual([3.2]);
+    expect(planPasses(4, 4)).toEqual([4]);
+  });
+
+  it('runs Enhance (SeedVR2) at 10x in a single request', async () => {
+    const fal = fakeFal();
+    const result = await createFalUpscaler(fal as never).upscale(tiny('enhance'));
+    expect(fal.subscribe).toHaveBeenCalledTimes(1);
+    expect(fal.subscribe.mock.calls[0][1].input.upscale_factor).toBe(10);
+    expect(result).toEqual({ url: 'https://fal.media/out.jpg', width: 940, height: 2040 });
+  });
+
+  it.each(['pro', 'creative'] as const)('runs %s in two passes: 4x, then 2.5x on the first output', async (mode) => {
+    const fal = fakeFal();
+    passOutputs(fal);
+    const result = await createFalUpscaler(fal as never).upscale(tiny(mode));
+
+    expect(fal.storage.upload).toHaveBeenCalledTimes(1);
+    expect(fal.subscribe).toHaveBeenCalledTimes(2);
+    const [first, second] = fal.subscribe.mock.calls;
+    expect(first[0]).toBe(MODEL_TABLE[mode].endpoint);
+    expect(second[0]).toBe(MODEL_TABLE[mode].endpoint);
+    expect(first[1].input).toMatchObject({ image_url: 'https://fal.media/in.jpg', upscale_factor: 4 });
+    expect(second[1].input).toMatchObject({ image_url: 'https://fal.media/pass1.jpg', upscale_factor: 2.5 });
+    expect(first[1].abortSignal).toBe(second[1].abortSignal);
+    expect(result).toEqual({ url: 'https://fal.media/pass2.jpg', width: 940, height: 2040 });
+  });
+
+  it('maps a failure in the second pass to provider_error', async () => {
+    const fal = fakeFal();
+    fal.subscribe
+      .mockResolvedValueOnce({ data: { image: { url: 'https://fal.media/pass1.jpg' } } })
+      .mockRejectedValueOnce(new Error('pass 2 failed'));
+    await expect(createFalUpscaler(fal as never).upscale(tiny('pro'))).rejects.toMatchObject({
+      code: 'provider_error',
+    });
+  });
+
+  it('maps an abort during the second pass to timeout', async () => {
+    const fal = fakeFal();
+    const controller = new AbortController();
+    fal.subscribe
+      .mockImplementationOnce(async () => {
+        // Time runs out while pass 2 is in flight.
+        setTimeout(() => controller.abort(), 0);
+        return { data: { image: { url: 'https://fal.media/pass1.jpg' } } };
+      })
+      .mockReturnValueOnce(new Promise(() => {}));
+    const pending = createFalUpscaler(fal as never).upscale({ ...tiny('creative'), signal: controller.signal });
+    await expect(pending).rejects.toMatchObject({ code: 'timeout' });
+    expect(fal.subscribe).toHaveBeenCalledTimes(2);
+  });
+
+  it('declares per-pass limits from the fal model docs', () => {
+    expect(MODEL_TABLE.enhance.maxFactorPerPass).toBe(10);
+    expect(MODEL_TABLE.pro.maxFactorPerPass).toBe(4);
+    expect(MODEL_TABLE.creative.maxFactorPerPass).toBe(4);
+  });
+});
+
+describe('abandoned requests cancel queued fal jobs', () => {
+  /** A subscribe that enqueues (reporting a request ID) and then never finishes. */
+  const enqueueAndHang = (requestId: string) =>
+    jest.fn((_endpoint: string, options: { onEnqueue?: (id: string) => void }) => {
+      options.onEnqueue?.(requestId);
+      return new Promise(() => {});
+    });
+
+  it('cancels the queued job and starts no second pass when the request is aborted during pass 1', async () => {
+    const fal = fakeFal();
+    fal.subscribe = enqueueAndHang('job-1') as never;
+    const controller = new AbortController();
+    const pending = createFalUpscaler(fal as never).upscale({ ...request('creative', 94, 204), signal: controller.signal });
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'timeout' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/clarity-upscaler', { requestId: 'job-1' });
+    expect(fal.subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cancel anything for a completed request', async () => {
+    const fal = fakeFal();
+    fal.subscribe.mockImplementation(async (_e: string, options: { onEnqueue?: (id: string) => void }) => {
+      options.onEnqueue?.('job-ok');
+      return { data: { image: { url: 'https://fal.media/out.jpg' } } };
+    });
+    const controller = new AbortController();
+    await createFalUpscaler(fal as never).upscale({ ...request('enhance'), signal: controller.signal });
+    controller.abort(); // a late abort after completion must not cancel the finished job
+    expect(fal.queue.cancel).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { type CameraDevice, useCameraDevices } from 'react-native-vision-camera';
+import { type CameraDevice, useCameraDeviceExtensions, useCameraDevices } from 'react-native-vision-camera';
 
 function largestPhoto(device: CameraDevice): string {
   try {
@@ -18,6 +18,8 @@ function largestPhoto(device: CameraDevice): string {
  */
 export function useCameraDiagnostics(selected: CameraDevice | undefined) {
   const devices = useCameraDevices();
+  // Only the dev logs use the result, so release builds skip the native query.
+  const extensions = useCameraDeviceExtensions(__DEV__ ? selected : undefined);
   useEffect(() => {
     if (!__DEV__ || devices.length === 0) return;
     const summary = devices.map((d) => ({
@@ -36,4 +38,12 @@ export function useCameraDiagnostics(selected: CameraDevice | undefined) {
     }));
     console.log(`[camera-diagnostics] ${JSON.stringify(summary)}`);
   }, [devices, selected?.id]);
+
+  // Vendor processing modes (Auto/HDR/Night use multi-frame processing). VisionCamera 5.2.3 can list
+  // them but not enable them yet; logged to see what the phone offers.
+  useEffect(() => {
+    if (!__DEV__ || !selected || extensions === undefined) return;
+    const summary = extensions.map((e) => `${e.type}${e.supportsFrameStreaming ? ' (frame streaming)' : ''}`);
+    console.log(`[camera-extensions] camera ${selected.id}: ${summary.length ? summary.join(', ') : 'none'}`);
+  }, [extensions, selected]);
 }

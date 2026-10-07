@@ -1,11 +1,13 @@
 import {
   ASSUMED_MAX_PHOTO,
   computeCrop,
-  computeMaxZoom,
+  computeZoomLimits,
   estimatePhotoSize,
   isFramingClamped,
+  MAX_ZOOM,
   maxDigitalFactor,
-  MIN_CROP_PIXELS,
+  MIN_CROP_SHORT_SIDE,
+  nativeDigitalFactor,
   visibleRegion,
 } from '../crop';
 
@@ -13,6 +15,8 @@ import {
 const SCREEN = 852 / 393;
 const PORTRAIT = { w: 3024, h: 4032 };
 const LANDSCAPE = { w: 4032, h: 3024 };
+// Samsung 5x telephoto, 12.5 MP, upright portrait.
+const SAMSUNG_5X = { w: 3060, h: 4080 };
 
 describe('visibleRegion', () => {
   it('crops the sides of a 4:3 portrait photo for a tall screen', () => {
@@ -59,14 +63,27 @@ describe('computeCrop', () => {
     expect(crop.y + crop.height).toBeLessThanOrEqual(LANDSCAPE.h);
   });
 
-  it('never goes below 1 MP, even past the maximum factor', () => {
+  it('never goes below a 64 px short side, even past the maximum factor', () => {
     for (const { w, h } of [PORTRAIT, LANDSCAPE, { w: 6048, h: 8064 }]) {
       const max = maxDigitalFactor(w, h, SCREEN);
       for (const d of [max, max * 1.001, max * 3]) {
         const crop = computeCrop(w, h, SCREEN, d);
-        expect(crop.width * crop.height).toBeGreaterThanOrEqual(MIN_CROP_PIXELS);
+        expect(Math.min(crop.width, crop.height)).toBeGreaterThanOrEqual(MIN_CROP_SHORT_SIDE);
       }
     }
+  });
+
+  it('crops a 100x Samsung capture (5x lens, 20x digital) to about 95 x 204 px', () => {
+    const crop = computeCrop(SAMSUNG_5X.w, SAMSUNG_5X.h, SCREEN, 20);
+    expect(crop).toMatchObject({ width: 95, height: 204 });
+  });
+
+  it('leaves crops below the native-pixel limit unchanged by the new floor', () => {
+    const native = nativeDigitalFactor(SAMSUNG_5X.w, SAMSUNG_5X.h, SCREEN);
+    const crop = computeCrop(SAMSUNG_5X.w, SAMSUNG_5X.h, SCREEN, native);
+    expect(crop.width * crop.height).toBeGreaterThanOrEqual(999_000);
+    const region = visibleRegion(SAMSUNG_5X.w, SAMSUNG_5X.h, SCREEN);
+    expect(crop.width).toBe(Math.ceil(region.width / native));
   });
 
   it('treats factors below 1 as 1', () => {
@@ -74,15 +91,37 @@ describe('computeCrop', () => {
   });
 });
 
-describe('computeMaxZoom', () => {
-  it('scales the optical cap by the 1 MP digital headroom', () => {
-    const region = visibleRegion(PORTRAIT.w, PORTRAIT.h, SCREEN);
-    const expected = 3 * Math.sqrt((region.width * region.height) / 1e6);
-    expect(computeMaxZoom(3, PORTRAIT.w, PORTRAIT.h, SCREEN)).toBeCloseTo(expected, 6);
+describe('computeZoomLimits', () => {
+  it('gives a ~13.9x native-pixel limit and a 100x maximum on the Samsung 5x lens', () => {
+    const { nativeLimit, maxZoom } = computeZoomLimits(5, SAMSUNG_5X.w, SAMSUNG_5X.h, SCREEN);
+    expect(nativeLimit).toBeCloseTo(13.86, 1);
+    expect(maxZoom).toBe(MAX_ZOOM);
   });
 
-  it('allows more zoom with a higher-resolution sensor', () => {
-    expect(computeMaxZoom(1, 6048, 8064, SCREEN)).toBeGreaterThan(computeMaxZoom(1, 3024, 4032, SCREEN));
+  it('caps a main-lens-only 12 MP phone at about 29x', () => {
+    const { nativeLimit, maxZoom } = computeZoomLimits(1, 3024, 4032, SCREEN);
+    expect(maxZoom).toBeCloseTo(1860 / 64, 1);
+    expect(maxZoom).toBeLessThan(MAX_ZOOM);
+    expect(nativeLimit).toBeCloseTo(Math.sqrt((1860 * 4032) / 1e6), 2);
+  });
+
+  it('keeps the native-pixel limit at the 1 MP rule', () => {
+    const region = visibleRegion(PORTRAIT.w, PORTRAIT.h, SCREEN);
+    const expected = 3 * Math.sqrt((region.width * region.height) / 1e6);
+    expect(computeZoomLimits(3, PORTRAIT.w, PORTRAIT.h, SCREEN).nativeLimit).toBeCloseTo(expected, 6);
+  });
+
+  it('allows more zoom with a higher-resolution sensor, up to 100x', () => {
+    const small = computeZoomLimits(1, 3024, 4032, SCREEN);
+    const large = computeZoomLimits(1, 6048, 8064, SCREEN);
+    expect(large.maxZoom).toBeGreaterThan(small.maxZoom);
+    expect(large.nativeLimit).toBeGreaterThan(small.nativeLimit);
+    expect(computeZoomLimits(10, 6048, 8064, SCREEN).maxZoom).toBe(MAX_ZOOM);
+  });
+
+  it('never puts the native-pixel limit above the maximum', () => {
+    const { nativeLimit, maxZoom } = computeZoomLimits(40, 6048, 8064, SCREEN);
+    expect(nativeLimit).toBeLessThanOrEqual(maxZoom);
   });
 });
 
@@ -113,7 +152,7 @@ describe('estimatePhotoSize', () => {
 });
 
 describe('isFramingClamped', () => {
-  it('detects a requested factor beyond the 1 MP floor', () => {
+  it('detects a requested factor beyond the 64 px floor', () => {
     const max = maxDigitalFactor(2448, 3264, SCREEN);
     expect(isFramingClamped(2448, 3264, SCREEN, max)).toBe(false);
     expect(isFramingClamped(2448, 3264, SCREEN, max * 1.05)).toBe(true);

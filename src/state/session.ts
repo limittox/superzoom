@@ -33,8 +33,10 @@ interface SessionState {
   captureZoom: number;
   /** Development builds only: which lens took the photo (EXIF lens check). */
   devLensNote: string | null;
+  /** Captured beyond the native-pixel limit, so results are labeled AI-reconstructed. */
+  aiReconstructed: boolean;
 
-  startSession(original: LocalImage, upload: LocalImage, captureZoom: number): void;
+  startSession(original: LocalImage, upload: LocalImage, captureZoom: number, aiReconstructed?: boolean): void;
   /** Returns a request ID; results for any other ID are ignored. */
   beginRequest(mode: EnhanceMode): number;
   /** Returns false (and stores nothing) if the request was cancelled or superseded. */
@@ -56,13 +58,15 @@ const empty = {
   request: { status: 'idle' } as RequestState,
   saved: { original: false, enhanced: {} },
   devLensNote: null as string | null,
+  aiReconstructed: false,
 };
 
 export const useSession = create<SessionState>()((set, get) => ({
   ...empty,
   captureZoom: 1,
 
-  startSession: (original, upload, captureZoom) => set({ ...empty, original, upload, captureZoom }),
+  startSession: (original, upload, captureZoom, aiReconstructed = false) =>
+    set({ ...empty, original, upload, captureZoom, aiReconstructed }),
 
   beginRequest: (mode) => {
     const id = nextRequestId++;

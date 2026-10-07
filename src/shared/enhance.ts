@@ -23,7 +23,7 @@ export const LIMITS = {
   maxInputPixels: 4_000_000,
   maxOutputPixels: 16_000_000,
   minUpscale: 2,
-  maxUpscale: 4,
+  maxUpscale: 10,
   providerTimeoutMs: 120_000,
 } as const;
 

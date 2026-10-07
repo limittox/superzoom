@@ -3,8 +3,9 @@ import { Platform } from 'react-native';
 import { useDerivedValue, useSharedValue } from 'react-native-reanimated';
 import { CommonResolutions, useCameraDevices, usePhotoOutput } from 'react-native-vision-camera';
 
-import { computeMaxZoom, estimatePhotoSize, isFramingClamped, type Size } from './crop';
+import { computeZoomLimits, estimatePhotoSize, isFramingClamped, type Size } from './crop';
 import { readExifFocalLength } from './exifFocalLength';
+import { isAiReconstructed } from './zoomTier';
 import { describeLensCheck } from './lensCheck';
 import { analyzeLenses, type LensInfo, splitZoom } from './lenses';
 import { pickBackCamera } from './pickBackCamera';
@@ -21,6 +22,8 @@ export interface Capture extends ProcessedCapture {
   framingClamped: boolean;
   /** Corrected maximum zoom after this capture. */
   maxDisplayZoom: number;
+  /** Taken beyond the native-pixel limit: most detail will be generated (specs/zoom-capture: Native-pixel limit). */
+  aiReconstructed: boolean;
   /** Development builds only: which lens took the photo, for display on the result screen. */
   devLensNote?: string;
 }
@@ -51,9 +54,10 @@ export function useZoomCamera(previewLongOverShort: number) {
   const supportedPhotoSizes = useMemo(() => device?.getSupportedResolutions('photo') ?? [], [device]);
   const photoSize = estimatePhotoSize(supportedPhotoSizes, learnedSizes[sizeKey]);
 
-  const maxDisplayZoom = lensInfo
-    ? computeMaxZoom(lensInfo.opticalCapDisplay, photoSize.width, photoSize.height, previewLongOverShort)
-    : 1;
+  // nativeLimit: past it, captures are AI-reconstructed. maxDisplayZoom: up to 100x (64 px crop floor).
+  const { nativeLimit, maxZoom: maxDisplayZoom } = lensInfo
+    ? computeZoomLimits(lensInfo.opticalCapDisplay, photoSize.width, photoSize.height, previewLongOverShort)
+    : { nativeLimit: 1, maxZoom: 1 };
   const minDisplayZoom = lensInfo?.minDisplayZoom ?? 1;
 
   /** Display zoom, 1x = main lens. Driven by gestures and presets on the UI thread. */
@@ -106,13 +110,15 @@ export function useZoomCamera(previewLongOverShort: number) {
 
       const processed = await processCapture(upright, previewLongOverShort, digitalFactor);
       const framingClamped = isFramingClamped(upright.width, upright.height, previewLongOverShort, digitalFactor);
-      const maxZoom = computeMaxZoom(lensInfo.opticalCapDisplay, actual.width, actual.height, previewLongOverShort);
+      const limits = computeZoomLimits(lensInfo.opticalCapDisplay, actual.width, actual.height, previewLongOverShort);
+      // When clamped, the photo matches the corrected max zoom, not the zoom the preview showed.
+      const effectiveZoom = framingClamped ? limits.maxZoom : zoom;
       return {
         ...processed,
-        // When clamped, the photo matches the corrected max zoom, not the zoom the preview showed.
-        displayZoom: framingClamped ? maxZoom : zoom,
+        displayZoom: effectiveZoom,
         framingClamped,
-        maxDisplayZoom: maxZoom,
+        maxDisplayZoom: limits.maxZoom,
+        aiReconstructed: isAiReconstructed(effectiveZoom, limits.nativeLimit),
         devLensNote,
       };
     } finally {
@@ -129,6 +135,7 @@ export function useZoomCamera(previewLongOverShort: number) {
     previewScale,
     minDisplayZoom,
     maxDisplayZoom,
+    nativeLimit,
     capture,
   };
 }

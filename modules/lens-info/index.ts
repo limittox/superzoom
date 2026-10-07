@@ -27,8 +27,28 @@ export interface LensGeometry {
   zoomRatioRange: [number, number] | null;
 }
 
+/** What a Camera2 vendor extension (Night, HDR, …) supports. Fields are null where the OS can't say. */
+export interface ExtensionDetails {
+  type: 'auto' | 'face-retouch' | 'bokeh' | 'hdr' | 'night' | string;
+  /** Whether CONTROL_ZOOM_RATIO is honoured (Android 13+). */
+  supportsZoom: boolean | null;
+  requestKeys: string[] | null;
+  /** The extension's zoom ratio range (Android 15+). */
+  zoomRatioRange: [number, number] | null;
+  maxJpegSize: LensDimensions | null;
+  captureLatencyMs: [number, number] | null;
+}
+
+export interface ExtensionInfo {
+  sdkInt: number;
+  extensions: ExtensionDetails[];
+  /** Set when the query failed: the step and the exception. Older native builds omit it. */
+  error?: string | null;
+}
+
 declare class LensInfoModule extends NativeModule {
   getLensGeometry(cameraId: string): Promise<LensGeometry | null>;
+  getExtensionInfo(cameraId: string): Promise<ExtensionInfo | null>;
 }
 
 // Android only. iOS, web and Jest have no native module, so this is null there.
@@ -40,6 +60,21 @@ export async function getLensGeometry(cameraId: string): Promise<LensGeometry | 
   try {
     return await native.getLensGeometry(cameraId);
   } catch {
+    return null;
+  }
+}
+
+/**
+ * Camera2 extension capabilities for a camera (Android 12+), or null where unavailable.
+ * Don't call it while VisionCamera queries extensions (`useCameraDeviceExtensions`): both use
+ * Android's process-wide extension service, and overlapping calls fail with "Service not registered".
+ */
+export async function getExtensionInfo(cameraId: string): Promise<ExtensionInfo | null> {
+  if (!native?.getExtensionInfo) return null;
+  try {
+    return await native.getExtensionInfo(cameraId);
+  } catch (error) {
+    if (__DEV__) console.warn('[extension-info] native query failed:', error);
     return null;
   }
 }

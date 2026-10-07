@@ -7,7 +7,7 @@ export interface UpscalePlan {
 }
 
 /**
- * Picks the largest upscale factor in [2, 4] whose output stays within 16 MP.
+ * Picks the largest upscale factor in [2, 10] whose output stays within 16 MP.
  * When the model only accepts certain factors, rounds down to the nearest
  * supported one (never below 2). See design.md decision 7.
  */

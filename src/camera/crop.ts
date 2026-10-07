@@ -1,6 +1,12 @@
 /** Crop math for capture (design.md decision 5). Coordinates are in the upright image. */
 
+import { LIMITS } from '@/shared/enhance';
+
+/** Native-pixel limit: beyond the zoom where the crop holds this many pixels, results are AI-reconstructed. */
 export const MIN_CROP_PIXELS = 1_000_000;
+/** Smallest crop the enhancement service accepts (short side), so it also bounds the maximum zoom. */
+export const MIN_CROP_SHORT_SIDE = LIMITS.minSidePx;
+export const MAX_ZOOM = 100;
 
 export interface CropRect {
   x: number;
@@ -33,25 +39,43 @@ export function visibleRegion(width: number, height: number, screenLongOverShort
   return { x: Math.floor((width - w) / 2), y: Math.floor((height - h) / 2), width: w, height: h };
 }
 
-/** Largest digital factor that keeps at least 1 MP of native pixels in the crop. */
-export function maxDigitalFactor(width: number, height: number, screenLongOverShort: number): number {
+/** Digital factor at which the crop still holds 1 MP of native pixels (the native-pixel limit). */
+export function nativeDigitalFactor(width: number, height: number, screenLongOverShort: number): number {
   const region = visibleRegion(width, height, screenLongOverShort);
   return Math.max(1, Math.sqrt((region.width * region.height) / MIN_CROP_PIXELS));
 }
 
-/** Maximum display zoom: optical cap times the largest digital factor. */
-export function computeMaxZoom(
+/** Largest digital factor that keeps the crop's short side at least 64 px. */
+export function maxDigitalFactor(width: number, height: number, screenLongOverShort: number): number {
+  const region = visibleRegion(width, height, screenLongOverShort);
+  return Math.max(1, Math.min(region.width, region.height) / MIN_CROP_SHORT_SIDE);
+}
+
+export interface ZoomLimits {
+  /** Display zoom where captures stop holding 1 MP of native pixels. */
+  nativeLimit: number;
+  /** Highest display zoom offered: 100x, or less if the crop would drop below 64 px. */
+  maxZoom: number;
+}
+
+/** Zoom limits for the optical cap and photo size (extreme-zoom-100x design decision 1). */
+export function computeZoomLimits(
   opticalCapDisplay: number,
   photoWidth: number,
   photoHeight: number,
   screenLongOverShort: number,
-): number {
-  return opticalCapDisplay * maxDigitalFactor(photoWidth, photoHeight, screenLongOverShort);
+): ZoomLimits {
+  const maxZoom = Math.min(MAX_ZOOM, opticalCapDisplay * maxDigitalFactor(photoWidth, photoHeight, screenLongOverShort));
+  const nativeLimit = Math.min(
+    maxZoom,
+    opticalCapDisplay * nativeDigitalFactor(photoWidth, photoHeight, screenLongOverShort),
+  );
+  return { nativeLimit, maxZoom };
 }
 
 /**
  * The crop matching what the preview showed at digital factor `digitalFactor`.
- * The factor is clamped so the crop never drops below 1 MP.
+ * The factor is clamped so the crop's short side never drops below 64 px.
  */
 export function computeCrop(
   width: number,
@@ -61,7 +85,7 @@ export function computeCrop(
 ): CropRect {
   const region = visibleRegion(width, height, screenLongOverShort);
   const factor = Math.min(Math.max(1, digitalFactor), maxDigitalFactor(width, height, screenLongOverShort));
-  // Round up so the 1 MP floor survives integer rounding.
+  // Round up so the 64 px floor survives integer rounding.
   const w = Math.min(region.width, Math.ceil(region.width / factor));
   const h = Math.min(region.height, Math.ceil(region.height / factor));
   return { x: Math.floor((width - w) / 2), y: Math.floor((height - h) / 2), width: w, height: h };
