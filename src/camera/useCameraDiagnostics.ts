@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { type CameraDevice, useCameraDeviceExtensions, useCameraDevices } from 'react-native-vision-camera';
 
-import { getExtensionInfo } from '../../modules/lens-info';
+import { getExtensionInfo, hasExtensionInfo } from '../../modules/lens-info';
 
 function largestPhoto(device: CameraDevice): string {
   try {
@@ -52,7 +52,8 @@ export function useCameraDiagnostics(selected: CameraDevice | undefined) {
   useEffect(() => {
     if (!__DEV__ || !selected) return;
     getExtensionInfo(selected.id).then((info) => {
-      console.log(`[extension-info] camera ${selected.id}: ${info ? JSON.stringify(info) : 'unavailable'}`);
+      const reason = hasExtensionInfo ? 'native query returned nothing' : 'not in this native build';
+      console.log(`[extension-info] camera ${selected.id}: ${info ? JSON.stringify(info) : `unavailable (${reason})`}`);
     });
   }, [selected]);
 }

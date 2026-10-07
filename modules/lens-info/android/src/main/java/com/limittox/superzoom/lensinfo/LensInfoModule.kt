@@ -77,17 +77,26 @@ class LensInfoModule : Module() {
   /**
    * What Camera2 vendor extensions (Night, HDR, …) support on this camera: request keys
    * (e.g. whether zoom works), zoom range, largest JPEG size and capture latency.
-   * Each field is null where the OS is too old to report it. Null overall on API < 31 or on error.
+   * Each field is null where the OS is too old to report it. Null overall on API < 31. On failure,
+   * `error` names the step that failed and the exception, so a device that refuses the query says why.
    */
   private fun readExtensionInfo(cameraId: String): Map<String, Any?>? {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+    var step = "getCameraExtensionCharacteristics"
     return try {
       val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
       val extensions = manager.getCameraExtensionCharacteristics(cameraId)
-      val details = extensions.supportedExtensions.map { ext -> describeExtension(extensions, ext) }
-      mapOf("sdkInt" to Build.VERSION.SDK_INT, "extensions" to details)
-    } catch (e: Exception) {
-      null
+      step = "supportedExtensions"
+      val supported = extensions.supportedExtensions
+      step = "describeExtension"
+      val details = supported.map { ext -> describeExtension(extensions, ext) }
+      mapOf("sdkInt" to Build.VERSION.SDK_INT, "extensions" to details, "error" to null)
+    } catch (e: Throwable) {
+      mapOf(
+        "sdkInt" to Build.VERSION.SDK_INT,
+        "extensions" to emptyList<Any>(),
+        "error" to "$step: ${e.javaClass.name}: ${e.message}",
+      )
     }
   }
 

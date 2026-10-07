@@ -42,6 +42,8 @@ export interface ExtensionDetails {
 export interface ExtensionInfo {
   sdkInt: number;
   extensions: ExtensionDetails[];
+  /** Set when the query failed: the step and the exception. Older native builds omit it. */
+  error?: string | null;
 }
 
 declare class LensInfoModule extends NativeModule {
@@ -62,12 +64,16 @@ export async function getLensGeometry(cameraId: string): Promise<LensGeometry | 
   }
 }
 
+/** Whether the installed native build includes getExtensionInfo (older dev builds don't). */
+export const hasExtensionInfo = typeof native?.getExtensionInfo === 'function';
+
 /** Camera2 extension capabilities for a camera (Android 12+), or null where unavailable. */
 export async function getExtensionInfo(cameraId: string): Promise<ExtensionInfo | null> {
   if (!native?.getExtensionInfo) return null;
   try {
     return await native.getExtensionInfo(cameraId);
-  } catch {
+  } catch (error) {
+    if (__DEV__) console.warn('[extension-info] native query failed:', error);
     return null;
   }
 }
