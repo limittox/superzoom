@@ -73,7 +73,7 @@ Device:
 
 ## Migration Plan
 
-App and backend change only; no native code, so the existing dev build works. Deploy order: backend (dev server now, EAS Hosting later), then the app. Older app versions keep working, since they only send crops of at least 1 MP.
+The zoom and enhancement changes are app (JavaScript) and backend only, so they work on an existing dev build. The `getExtensionInfo` Camera2 query added during device testing is native code in `modules/lens-info`: builds made before it lack the method, and the wrapper returns `null` there, so it needs a rebuilt app. Deploy order: backend (dev server now, EAS Hosting later), then the app. Older app versions keep working, since they only send crops of at least 1 MP.
 
 ## Open Questions
 

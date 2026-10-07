@@ -28,6 +28,6 @@ The user wants zoom up to 100x, like the "Space Zoom" on their Samsung. Today th
 ## Impact
 
 - **Changed code:** `src/camera/crop.ts` (limits), `src/camera/useZoomCamera.ts`, `src/components/ZoomControls.tsx` (tiers, presets, hint), `src/app/index.tsx` (preview stabilization), `src/shared/enhance.ts` and `src/shared/upscale.ts` (factor range), `src/server/upscaler/fal.ts` (two-pass), `src/app/result.tsx` and `src/state/session.ts` (label).
-- **No new dependencies and no native changes**, so no new dev build is needed. The backend changes take effect on the dev server, or on redeploy once hosted.
+- **No new dependencies.** The zoom and enhancement changes need no new dev build; the backend changes take effect on the dev server, or on redeploy once hosted. The `getExtensionInfo` extension query (native, in `modules/lens-info`, added during device testing) needs a rebuilt app; older builds return `null`.
 - **Cost:** Pro and Creative cost up to about twice as much at extreme zoom because of the second pass. Outputs are small (about 2 MP), so Clarity's per-megapixel cost stays low. Topaz is billed per image, so about $0.16.
 - **Quality expectations:** at 100x most detail is invented by the model. The UI says so.

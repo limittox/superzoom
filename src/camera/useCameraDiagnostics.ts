@@ -18,7 +18,8 @@ function largestPhoto(device: CameraDevice): string {
  */
 export function useCameraDiagnostics(selected: CameraDevice | undefined) {
   const devices = useCameraDevices();
-  const extensions = useCameraDeviceExtensions(selected);
+  // Only the dev logs use the result, so release builds skip the native query.
+  const extensions = useCameraDeviceExtensions(__DEV__ ? selected : undefined);
   useEffect(() => {
     if (!__DEV__ || devices.length === 0) return;
     const summary = devices.map((d) => ({
