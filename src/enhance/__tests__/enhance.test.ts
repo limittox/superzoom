@@ -47,6 +47,15 @@ describe('uploadDimensions', () => {
   it('keeps exactly 4 MP', () => {
     expect(uploadDimensions(2000, 2000)).toEqual({ width: 2000, height: 2000 });
   });
+
+  it('enlarges a tiny 100x crop to the 128 px minimum short side, keeping aspect ratio', () => {
+    expect(uploadDimensions(95, 204)).toEqual({ width: 128, height: 275 });
+    expect(uploadDimensions(204, 95)).toEqual({ width: 275, height: 128 });
+  });
+
+  it('keeps a crop whose short side is exactly the minimum', () => {
+    expect(uploadDimensions(128, 300)).toEqual({ width: 128, height: 300 });
+  });
 });
 
 describe('failureMessage', () => {

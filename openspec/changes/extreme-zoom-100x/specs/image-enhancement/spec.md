@@ -14,12 +14,31 @@ The service SHALL choose an upscale factor of at least 2x and at most 10x per si
 - **THEN** the output is at least 4000×3000 pixels, at most 16 MP, and has a 4:3 aspect ratio
 
 #### Scenario: Tiny crop from extreme zoom
-- **WHEN** the input is 94×204 pixels in Enhance mode
-- **THEN** the output is upscaled 10x to about 940×2040 pixels in a single provider request
+- **WHEN** the input is 128×275 pixels (a 100x crop enlarged by the app for upload) in Enhance mode
+- **THEN** the output is upscaled 10x to about 1280×2750 pixels in a single provider request
 
 #### Scenario: Tiny crop in a mode capped at 4x
-- **WHEN** the input is 94×204 pixels in Pro or Creative mode
+- **WHEN** the input is 128×275 pixels in Pro or Creative mode
 - **THEN** the service runs two provider requests and returns an output of the same size as Enhance mode, within the overall timeout
+
+### Requirement: Input validation
+The service SHALL accept only JPEG and PNG images no larger than 20 MB and at least 128 pixels on the shortest side, the smallest size every enhancement model accepts. Invalid input SHALL be rejected with a specific error before any AI provider is called.
+
+#### Scenario: Unsupported format
+- **WHEN** the app uploads a GIF
+- **THEN** the service responds with an `unsupported_format` error
+
+#### Scenario: Oversized upload
+- **WHEN** the app uploads a 25 MB file
+- **THEN** the service responds with a `file_too_large` error
+
+#### Scenario: Image too small
+- **WHEN** the app uploads a 50×50 pixel image
+- **THEN** the service responds with an `image_too_small` error
+
+#### Scenario: Tiny crop not enlarged
+- **WHEN** an upload is 95×204 pixels
+- **THEN** the service responds with an `image_too_small` error, since Enhance's model rejects images under 128 pixels per side
 
 ## ADDED Requirements
 

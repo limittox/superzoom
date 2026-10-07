@@ -23,12 +23,13 @@
 - [x] 4.2 Add `maxFactorPerPass` to `MODEL_TABLE` (SeedVR2 10, Topaz 4, Clarity 4) and run a second fal request on pass 1's output URL when the factor exceeds it, sharing the abort signal; verify mocked-client tests cover single-pass Enhance at 10x, two-pass Pro and Creative (factors 4 and 2.5, pass 2 `image_url` = pass 1 URL), a pass-2 failure → `provider_error`, and an abort during pass 2 → `timeout`
 - [x] 4.3 Update `docs/backend.md` (upscale range, two-pass behaviour and its cost) and the route tests for a 94×204 input; verify `npm test` passes and the documented numbers match `LIMITS`
 - [x] 4.4 Stop provider work for abandoned requests: link the route's abort controller to `request.signal` (client cancel or disconnect) as well as the timeout, log those as `cancelled`, and have the fal upscaler record each job's request ID (`onEnqueue`) and call `queue.cancel` on abort without starting further passes; verify tests cover a client abort during pass 1 (cancel called, no pass 2), a timeout (cancel called, `timeout` response) and a normal run (no cancel)
+- [x] 4.5 Enlarge tiny crops for upload (found in device testing: SeedVR2 rejects images under 128 px per side): raise `LIMITS.minSidePx` to 128, keep the camera's `MIN_CROP_SHORT_SIDE` at 64, and have `uploadDimensions()` enlarge crops under 128 px on the short side to exactly 128 keeping aspect ratio; update `docs/backend.md`; verify unit tests cover 95×204 → 128×275, the server rejecting 95×204 and accepting 128 px, a 100x `processCapture` enlarging the upload but not the original, and route tests at 128×275 → 1280×2750
 
 ## 5. Device verification
 
 - [ ] 5.1 On the Samsung with the dev server: verify presets include 10x/30x/100x, the indicator shows optical → AI ZOOM → AI-RECONSTRUCTED at 5x and ≈13.9x, and the brace hint appears only in the reconstructed tier; record in `docs/device-test-matrix.md`
 - [ ] 5.2 Capture at ≈50x of a distinctive target and compare the saved crop with a screenshot of the preview; verify the framing matches within about 3% with preview stabilization on, or remove the stabilization constraint and re-verify; record the outcome in `docs/device-test-matrix.md`
-- [ ] 5.3 Enhance a 100x capture in Enhance, Pro and Creative; verify each returns within the 120 s timeout at about 1.9 MP output, the result is labeled AI-reconstructed, and the dev server logs show two provider requests for Pro and Creative; record timings in `docs/device-test-matrix.md`
+- [ ] 5.3 Enhance a 100x capture in Enhance, Pro and Creative; verify each returns within the 120 s timeout at about 3.5 MP output, the result is labeled AI-reconstructed, and the dev server logs show two provider requests for Pro and Creative; record timings in `docs/device-test-matrix.md`
 - [x] 5.4 Run `npm test`, `npm run lint` and `npm run typecheck`; verify all pass
 
 ## Workflow follow-up

@@ -1,11 +1,12 @@
 /** Crop math for capture (design.md decision 5). Coordinates are in the upright image. */
 
-import { LIMITS } from '@/shared/enhance';
-
 /** Native-pixel limit: beyond the zoom where the crop holds this many pixels, results are AI-reconstructed. */
 export const MIN_CROP_PIXELS = 1_000_000;
-/** Smallest crop the enhancement service accepts (short side), so it also bounds the maximum zoom. */
-export const MIN_CROP_SHORT_SIDE = LIMITS.minSidePx;
+/**
+ * Smallest crop short side in sensor pixels; it bounds the maximum zoom. Crops below the
+ * service's upload minimum (`LIMITS.minSidePx`) are enlarged for upload (`uploadDimensions`).
+ */
+export const MIN_CROP_SHORT_SIDE = 64;
 export const MAX_ZOOM = 100;
 
 export interface CropRect {

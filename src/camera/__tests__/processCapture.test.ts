@@ -52,6 +52,17 @@ describe('processCapture', () => {
     expect(log.filter((l) => l.startsWith('save')).map((l) => l.split(' ').pop())).toEqual(['95', '90']);
   });
 
+  it('enlarges the upload copy of a tiny 100x crop but keeps the original at sensor size', async () => {
+    const log: string[] = [];
+    // Samsung at 100x: 5x lens, 20x digital crop of a 3060x4080 photo.
+    const result = await processCapture(fakeImage(3060, 4080, log), SCREEN, 20);
+
+    expect(Math.min(result.original.width, result.original.height)).toBeLessThan(128);
+    expect(Math.min(result.upload.width, result.upload.height)).toBe(128);
+    expect(result.upload.width / result.upload.height).toBeCloseTo(result.original.width / result.original.height, 1);
+    expect(log.filter((l) => l.startsWith('save')).map((l) => l.split(' ').pop())).toEqual(['95', '90']);
+  });
+
   it('crops a landscape-grip photo with a landscape rectangle', async () => {
     const result = await processCapture(fakeImage(4032, 3024), SCREEN, 3);
     expect(result.original.width).toBeGreaterThan(result.original.height);

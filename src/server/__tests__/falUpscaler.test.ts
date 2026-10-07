@@ -124,8 +124,8 @@ describe('describeProviderError', () => {
 });
 
 describe('extreme-zoom upscaling (two passes for 4x models)', () => {
-  // A 100x crop from the Samsung: 94x204 px, planned factor 10.
-  const tiny = (mode: 'enhance' | 'pro' | 'creative') => request(mode, 94, 204);
+  // A 100x crop from the Samsung (95x204 px), enlarged to 128x275 for upload: planned factor 10.
+  const tiny = (mode: 'enhance' | 'pro' | 'creative') => request(mode, 128, 275);
   const passOutputs = (fal: ReturnType<typeof fakeFal>) =>
     fal.subscribe
       .mockResolvedValueOnce({ data: { image: { url: 'https://fal.media/pass1.jpg' } }, requestId: 'r1' })
@@ -143,7 +143,7 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
     const result = await createFalUpscaler(fal as never).upscale(tiny('enhance'));
     expect(fal.subscribe).toHaveBeenCalledTimes(1);
     expect(fal.subscribe.mock.calls[0][1].input.upscale_factor).toBe(10);
-    expect(result).toEqual({ url: 'https://fal.media/out.jpg', width: 940, height: 2040 });
+    expect(result).toEqual({ url: 'https://fal.media/out.jpg', width: 1280, height: 2750 });
   });
 
   it.each(['pro', 'creative'] as const)('runs %s in two passes: 4x, then 2.5x on the first output', async (mode) => {
@@ -159,7 +159,7 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
     expect(first[1].input).toMatchObject({ image_url: 'https://fal.media/in.jpg', upscale_factor: 4 });
     expect(second[1].input).toMatchObject({ image_url: 'https://fal.media/pass1.jpg', upscale_factor: 2.5 });
     expect(first[1].abortSignal).toBe(second[1].abortSignal);
-    expect(result).toEqual({ url: 'https://fal.media/pass2.jpg', width: 940, height: 2040 });
+    expect(result).toEqual({ url: 'https://fal.media/pass2.jpg', width: 1280, height: 2750 });
   });
 
   it('maps a failure in the second pass to provider_error', async () => {
@@ -206,7 +206,7 @@ describe('abandoned requests cancel queued fal jobs', () => {
     const fal = fakeFal();
     fal.subscribe = enqueueAndHang('job-1') as never;
     const controller = new AbortController();
-    const pending = createFalUpscaler(fal as never).upscale({ ...request('creative', 94, 204), signal: controller.signal });
+    const pending = createFalUpscaler(fal as never).upscale({ ...request('creative', 128, 275), signal: controller.signal });
     await Promise.resolve();
     await Promise.resolve();
     controller.abort();

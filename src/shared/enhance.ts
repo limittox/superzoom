@@ -19,7 +19,8 @@ export const FORM_FIELDS = { image: 'image', mode: 'mode' } as const;
 
 export const LIMITS = {
   maxUploadBytes: 20 * 1024 * 1024,
-  minSidePx: 64,
+  /** Smallest upload short side. SeedVR2 (Enhance) rejects images under 128 px per side. */
+  minSidePx: 128,
   maxInputPixels: 4_000_000,
   maxOutputPixels: 16_000_000,
   minUpscale: 2,
