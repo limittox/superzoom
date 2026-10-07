@@ -63,3 +63,9 @@ Devices: **A** = iPhone with telephoto, **B** = iPhone without telephoto, **C** 
 | B |  |  |  |  |
 | C |  |  |  |  |
 | D |  |  |  |  |
+
+## Capturing a phone's camera list
+
+Development builds log every camera the camera library can see when the camera screen opens (`src/camera/useCameraDiagnostics.ts`; release builds skip it). With the dev server running (`npx expo start`), open the app and look for a line starting with `[camera-diagnostics]` in the dev server output. It lists each camera's ID, type, zoom range, focal length, largest photo size, and the physical lenses behind it, plus which camera the app selected (`"selected": true`).
+
+Example (Samsung with 0.6x/1x/3x/5x lenses, 2026-10-07): `id 0` "Back Quad Camera", virtual, zoom 0.6–10, physical lenses `2`/`5`/`6`/`7` at 2.2/6.3/7.9/18.6 mm. The app should select `id 0`.

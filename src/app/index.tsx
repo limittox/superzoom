@@ -14,6 +14,7 @@ import { Camera, type CameraRef, useCameraPermission } from 'react-native-vision
 import { scheduleOnRN } from 'react-native-worklets';
 
 import { handleCameraError } from '@/camera/cameraErrors';
+import { useCameraDiagnostics } from '@/camera/useCameraDiagnostics';
 import { useZoomCamera } from '@/camera/useZoomCamera';
 import { ModePicker } from '@/components/ModePicker';
 import { PermissionScreen } from '@/components/PermissionScreen';
@@ -73,6 +74,7 @@ function ZoomCamera() {
   const { device, lensInfo, photoOutput, displayZoom, deviceZoom, previewScale, minDisplayZoom, maxDisplayZoom } =
     zoomCamera;
   const isActive = useCameraActive();
+  useCameraDiagnostics(device);
   const mode = useSettings((s) => s.mode);
   const setMode = useSettings((s) => s.setMode);
   const settingsHydrated = useSettingsHydrated();

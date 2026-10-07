@@ -1,10 +1,14 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { useDerivedValue, useSharedValue } from 'react-native-reanimated';
-import { CommonResolutions, useCameraDevice, usePhotoOutput } from 'react-native-vision-camera';
+import { CommonResolutions, useCameraDevices, usePhotoOutput } from 'react-native-vision-camera';
 
 import { computeMaxZoom, estimatePhotoSize, isFramingClamped, type Size } from './crop';
+import { readExifFocalLength } from './exifFocalLength';
+import { describeLensCheck } from './lensCheck';
 import { analyzeLenses, type LensInfo, splitZoom } from './lenses';
+import { pickBackCamera } from './pickBackCamera';
+import { useLensFactors } from './useLensFactors';
 import { type ProcessedCapture, processCapture } from './processCapture';
 
 /** Real photo sizes learned from captures at the optical cap, keyed by device and cap. */
@@ -24,16 +28,19 @@ export interface Capture extends ProcessedCapture {
  * camera library stays behind one hook (design.md decisions 2–5).
  */
 export function useZoomCamera(previewLongOverShort: number) {
-  const device = useCameraDevice('back', { physicalDevices: ['ultra-wide-angle', 'wide-angle', 'telephoto'] });
+  const devices = useCameraDevices();
+  const device = useMemo(() => pickBackCamera(devices), [devices]);
   const photoOutput = usePhotoOutput({
     targetResolution: CommonResolutions.HIGHEST_4_3,
     containerFormat: 'jpeg',
     qualityPrioritization: 'quality',
   });
 
+  // Android only: real lens zoom factors from the lens-info module (null until loaded or unavailable).
+  const lensFactors = useLensFactors(device);
   const lensInfo: LensInfo | null = useMemo(
-    () => (device ? analyzeLenses(device, Platform.OS === 'ios' ? 'ios' : 'android') : null),
-    [device],
+    () => (device ? analyzeLenses(device, Platform.OS === 'ios' ? 'ios' : 'android', lensFactors) : null),
+    [device, lensFactors],
   );
   const sizeKey = device && lensInfo ? `${device.id}@${lensInfo.opticalCapDevice}` : '';
   const [, rerender] = useState(0);
@@ -62,6 +69,17 @@ export function useZoomCamera(previewLongOverShort: number) {
       const zoom = displayZoom.get();
       const { digitalFactor } = splitZoom(zoom, lensInfo);
       const photo = await photoOutput.capturePhoto({ enableShutterSound: true }, {});
+      if (__DEV__) {
+        // Development only, not awaited: log which lens actually took the photo (EXIF focal length).
+        const { deviceZoom: hardwareZoom } = splitZoom(zoom, lensInfo);
+        photo
+          .getFileDataAsync()
+          .then((data) => {
+            const check = describeLensCheck(zoom, hardwareZoom, readExifFocalLength(new Uint8Array(data)), lensInfo);
+            console[check.level](check.message);
+          })
+          .catch(() => {});
+      }
       const upright = await photo.toImageAsync();
 
       const actual = {
