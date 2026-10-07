@@ -51,3 +51,18 @@
 
 - Archive the change with `/opsx:archive` after review and the device test matrix are complete.
 - After archiving, confirm the three capabilities appear under `openspec/specs/`.
+
+## Verification status at archive (2026-10-07)
+
+Archived with the user's agreement while 13 tasks are still open. The app is implemented and in use on Android; the checks below were never run, so the boxes stay unchecked. Remaining work is tracked in `docs/follow-ups.md`.
+
+- **1.6:** Android dev build built with EAS, installed and launched on the user's Samsung. iOS build not done.
+- **3.5:** `docs/backend.md` written. All three modes run end-to-end against the local dev server with a real fal.ai key. EAS Hosting deployment not done.
+- **4.1:** First-launch permission prompt seen. Denied state and the "Open Settings" button not tested.
+- **4.4–4.6:** On Android: multi-lens camera, lens switching (EXIF-verified at 3x/5x/10x), presets, beyond-optical indicator, and 10x framing matching the preview (see `android-telephoto-lenses`). Not tested: iPhone, zoom clamping at min/max, tap-to-focus, landscape grip, double-tap guard.
+- **5.2:** Mode picker shown and used. Mode persisting across an app restart not confirmed.
+- **5.3:** Consent sheet flow used. Declining (nothing uploaded) not tested.
+- **5.5:** Original shown, progress, and re-running in other modes used on Android against the local backend. Cancel not tested; not tested against a deployed backend.
+- **5.6:** Comparison view, joint pinch/pan and the Creative caveat not explicitly checked.
+- **5.7:** Saving to the gallery not tested.
+- **6.1, 6.2:** Full device matrix and offline/rate-limit/slow-provider checks not run.
