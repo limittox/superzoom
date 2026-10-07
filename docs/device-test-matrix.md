@@ -90,15 +90,18 @@ Device: user's Samsung (Back Quad Camera, lenses 0.6x/1x/3x/5x), Android dev bui
 
 ## Extreme zoom to 100x (change `extreme-zoom-100x`)
 
-Device: user's Samsung (Back Quad Camera, Android 16), Android dev builds `b61858ad` and `00fdc96e`, 2026-10-07. Tasks 5.1–5.3 are still open; this records what has been checked so far.
+Device: user's Samsung (Back Quad Camera, Android 16), Android dev builds `b61858ad` and `00fdc96e`, 2026-10-07. Later checks on the same build with the dev server, 2026-10-07.
 
 | Check | Result |
 |---|---|
 | 30x capture, Enhance | ✅ 21.2 s, one SeedVR2 pass at 8.66x (`[fal]` log) |
 | 30x capture, Pro | ✅ 41.9 s, two Topaz passes (4x, then 2.16x) |
 | 30x capture, Creative | ✅ 47.7 s, two Clarity passes |
-| Cancel in the app during enhancement | ⚠️ before task 4.4, a cancelled job kept running on fal and queued later requests, so two Creative runs timed out at 120 s. Fixed by 4.4 (unit-tested); the 30x runs above came after the fix. The on-device cancel check (`cancelled` in the server log) is still open |
-| Presets 10x/30x/100x, tier badges at 5x and ≈13.9x, brace hint | ⏳ task 5.1 |
-| 50x framing against the preview, with preview stabilization | ⏳ task 5.2 |
-| 100x capture in all three modes | ⏳ task 5.3 |
+| Cancel in the app during enhancement | ✅ before task 4.4, a cancelled job kept running on fal and queued later requests, so two Creative runs timed out at 120 s. After 4.4, leaving the result screen during a 100x Pro run logged `cancelled` after 7.5 s with no second pass; a cancelled Enhance retry logged `cancelled` after 10.9 s |
+| Presets 10x/30x/100x, tier badges at 5x and ≈13.9x, brace hint | ✅ presets 0.6/1/3/5/10/30/100; optical → AI ZOOM → AI-RECONSTRUCTED as expected; the brace hint appears in the reconstructed tier (confirmed by the user) |
+| 50x framing against the preview, with preview stabilization | ✅ 50.04x on the 5x lens (18.6 mm): the saved original matched a screenshot of the preview, so preview stabilization stays |
+| 100x, Enhance | ❌ → ✅ first attempts failed with fal 422: SeedVR2 needs 128 px per side (95×204 crop), then at least 256 px when the output exceeds 1080p (128×275 upload at 10x). Fixed in task 4.5: tiny crops are enlarged to 128 px for upload, and Enhance's factor is capped to a 1920×1080 output for inputs under 256 px. Retest: 100x on the 5x lens → one SeedVR2 pass at 6.98x, 5.0 s; 50x → 4.71x, 6.1 s |
+| 100x, Pro | ✅ 45.7 s, two Topaz passes (4x, then 2.5x), labeled "AI-reconstructed (Pro)" (95×204 upload, before 4.5) |
+| 100x, Creative | ✅ 17.4 s, two Clarity passes (4x, then 2.5x) (95×204 upload, before 4.5) |
+| 100x lens choice | ⚠️ one 100x capture of a closer or dimmer subject used the 3x lens (7.9 mm); far, well-lit subjects used the 5x lens. The phone's choice, as with the telephoto change |
 | Night extension capabilities (`getExtensionInfo`) | ✅ night, bokeh and face-retouch honour `CONTROL_ZOOM_RATIO` over 0.6x–10x, largest JPEG 4080×3060; no capture latency reported. See the quality-gap item in `docs/follow-ups.md` |
