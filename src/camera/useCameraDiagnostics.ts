@@ -49,11 +49,14 @@ export function useCameraDiagnostics(selected: CameraDevice | undefined) {
   }, [extensions, selected]);
 
   // Native query (lens-info): whether Night etc. allow zoom, their zoom range, max JPEG size, latency.
+  // It waits for VisionCamera's extension list: both use Android's process-wide extension service,
+  // and overlapping queries fail with "Service not registered".
+  const extensionsLoaded = extensions !== undefined;
   useEffect(() => {
-    if (!__DEV__ || !selected) return;
+    if (!__DEV__ || !selected || !extensionsLoaded) return;
     getExtensionInfo(selected.id).then((info) => {
       const reason = hasExtensionInfo ? 'native query returned nothing' : 'not in this native build';
       console.log(`[extension-info] camera ${selected.id}: ${info ? JSON.stringify(info) : `unavailable (${reason})`}`);
     });
-  }, [selected]);
+  }, [selected, extensionsLoaded]);
 }
