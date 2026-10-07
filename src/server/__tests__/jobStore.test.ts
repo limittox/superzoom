@@ -89,6 +89,14 @@ describe('memoryJobStore', () => {
 });
 
 describe('shared development stores', () => {
+  it('replaces a shared job store left by older code (e.g. after a hot reload)', () => {
+    const g = globalThis as Record<string, unknown>;
+    g.__superzoomJobStore = { lock: async () => true };
+    const store = sharedMemoryJobStore();
+    expect(typeof store.isCancelRequested).toBe('function');
+    expect(sharedMemoryJobStore()).toBe(store);
+  });
+
   it('returns the same job store and rate-limit store on every call, as separate route bundles need', () => {
     expect(sharedMemoryJobStore()).toBe(sharedMemoryJobStore());
     expect(sharedMemoryStore()).toBe(sharedMemoryStore());

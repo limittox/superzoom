@@ -153,11 +153,19 @@ export function memoryJobStore(now: () => number = Date.now): JobStore {
   };
 }
 
+/** Bump when `JobStore` changes, so the dev server doesn't keep using a store built by older code. */
+const MEMORY_STORE_VERSION = 2;
+
 /**
  * The development job store. Each Expo Router API route is bundled separately, so it lives on
- * `globalThis` for the submit and job routes to share.
+ * `globalThis` for the submit and job routes to share. It is keyed by version: after a hot reload
+ * that changed the store, `globalThis` would otherwise still hold an instance without the new
+ * methods.
  */
 export function sharedMemoryJobStore(): JobStore {
-  const g = globalThis as { __superzoomJobStore?: JobStore };
-  return (g.__superzoomJobStore ??= memoryJobStore());
+  const g = globalThis as { __superzoomJobStore?: { version: number; store: JobStore } };
+  if (g.__superzoomJobStore?.version !== MEMORY_STORE_VERSION) {
+    g.__superzoomJobStore = { version: MEMORY_STORE_VERSION, store: memoryJobStore() };
+  }
+  return g.__superzoomJobStore.store;
 }
