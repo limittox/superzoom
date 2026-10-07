@@ -46,7 +46,7 @@ Implemented and working on Android, but not verified:
       - Night can zoom and presumably switch lenses up to 10x. Past 10x the app would crop the 10x Night shot itself, as it does now.
       - Night doesn't reach the telephoto's full ~50 MP, so it can't close the biggest part of the gap. What it adds is Samsung's own multi-frame merging (noise and possibly detail), which is worth an A/B test at 10x–30x against a normal capture.
       - Using it needs a native Camera2 `CameraExtensionSession` (or CameraX `ExtensionsManager`) capture path alongside VisionCamera's, and a check of how long a Night capture takes in daylight.
-      - Android's extension service is process-wide: overlapping queries (ours and VisionCamera's `useCameraDeviceExtensions`) fail with "Service not registered", so a Night capture path must not run alongside other extension calls.
+      - Android's extension service is process-wide: when our query ran alongside VisionCamera's `useCameraDeviceExtensions`, our client's release unbound the service under CameraX and its lookup failed with "Service not registered". The dev log no longer calls `getExtensionInfo`; the function stays for a future Night capture path, which must not overlap other extension calls.
     - VisionCamera 5.2.3 bundles CameraX 1.7.0-alpha03, including `camera-extensions`, so it's unaffected by Google removing extension support for CameraX ≤ 1.5 from 2026-11-01. Using Night would still need our own native extension session in place of VisionCamera's.
   - Send small crops as lossless PNG.
   - Benchmark our raw crop (before AI) against the native 30x, to separate input quality from model quality.

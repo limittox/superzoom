@@ -1,8 +1,6 @@
 import { useEffect } from 'react';
 import { type CameraDevice, useCameraDeviceExtensions, useCameraDevices } from 'react-native-vision-camera';
 
-import { getExtensionInfo, hasExtensionInfo } from '../../modules/lens-info';
-
 function largestPhoto(device: CameraDevice): string {
   try {
     const sizes = device.getSupportedResolutions('photo');
@@ -47,16 +45,4 @@ export function useCameraDiagnostics(selected: CameraDevice | undefined) {
     const summary = extensions.map((e) => `${e.type}${e.supportsFrameStreaming ? ' (frame streaming)' : ''}`);
     console.log(`[camera-extensions] camera ${selected.id}: ${summary.length ? summary.join(', ') : 'none'}`);
   }, [extensions, selected]);
-
-  // Native query (lens-info): whether Night etc. allow zoom, their zoom range, max JPEG size, latency.
-  // It waits for VisionCamera's extension list: both use Android's process-wide extension service,
-  // and overlapping queries fail with "Service not registered".
-  const extensionsLoaded = extensions !== undefined;
-  useEffect(() => {
-    if (!__DEV__ || !selected || !extensionsLoaded) return;
-    getExtensionInfo(selected.id).then((info) => {
-      const reason = hasExtensionInfo ? 'native query returned nothing' : 'not in this native build';
-      console.log(`[extension-info] camera ${selected.id}: ${info ? JSON.stringify(info) : `unavailable (${reason})`}`);
-    });
-  }, [selected, extensionsLoaded]);
 }

@@ -64,10 +64,11 @@ export async function getLensGeometry(cameraId: string): Promise<LensGeometry | 
   }
 }
 
-/** Whether the installed native build includes getExtensionInfo (older dev builds don't). */
-export const hasExtensionInfo = typeof native?.getExtensionInfo === 'function';
-
-/** Camera2 extension capabilities for a camera (Android 12+), or null where unavailable. */
+/**
+ * Camera2 extension capabilities for a camera (Android 12+), or null where unavailable.
+ * Don't call it while VisionCamera queries extensions (`useCameraDeviceExtensions`): both use
+ * Android's process-wide extension service, and overlapping calls fail with "Service not registered".
+ */
 export async function getExtensionInfo(cameraId: string): Promise<ExtensionInfo | null> {
   if (!native?.getExtensionInfo) return null;
   try {
