@@ -118,3 +118,12 @@ Device: user's Samsung (Back Quad Camera, Android 16), dev build `00fdc96e` with
 | Switch apps for about 1.5 minutes during a 30x Pro job | ✅ pass 1 at 00:35:07, pass 2 (2.16x) on return at 00:36:42, done at 00:37:07; one job, one upload |
 | Cancel during a Pro job | ❌ → ✅ the first try left the job running with no `DELETE` reaching the server: Cancel aborted the upload request while the service still queued the job, so the app never had its ID. Fixed: the upload is no longer aborted by Cancel, and the job is cancelled once its ID arrives. Retest: `DELETE` HTTP 200, `cancelled` after 7.4 s, no further pass |
 | Leave the result screen during a Pro job | ✅ `DELETE` HTTP 200, `cancelled` after 5.5 s, no pass 2 |
+
+Retest after the review fixes (`8943e20`, `d8cc568`), 2026-10-08:
+
+| Check | Result |
+|---|---|
+| Submit after a dev-server hot reload | ❌ → ✅ both Pro submissions failed with `provider_error`: the dev server's shared in-memory job store was an instance from before the reload, without the new lock and cancel-flag methods. Fixed by versioning the shared store (`d8cc568`); the cancel-on-error fix stopped both orphaned passes |
+| Cancel during a Pro job | ✅ `DELETE` HTTP 200, `cancelled` after 6.7 s, no further pass |
+| Leave the result screen during a Pro job | ✅ `DELETE` HTTP 200, `cancelled` after 5.9 s |
+| Switch apps during a 30x Pro job | ✅ pass 1 at 01:42:25, pass 2 on return at 01:45:42, done at 01:46:09 (3 min 47 s in total) |
