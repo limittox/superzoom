@@ -36,8 +36,9 @@ export async function requestEnhancement(
 ): Promise<EnhanceSuccess> {
   const installId = await getInstallId();
   const form = new FormData();
-  // React Native's FormData takes a { uri, name, type } descriptor for files.
-  form.append(FORM_FIELDS.image, { uri: upload.uri, name: 'crop.jpg', type: 'image/jpeg' } as unknown as Blob);
+  // Expo's fetch (the global fetch in SDK 57) rejects React Native's { uri, name, type }
+  // descriptors; it takes Blob-like parts, which expo-file-system's File implements.
+  form.append(FORM_FIELDS.image, new File(upload.uri), 'crop.jpg');
   form.append(FORM_FIELDS.mode, mode);
 
   let response: Response;
@@ -48,7 +49,8 @@ export async function requestEnhancement(
       headers: { [INSTALL_ID_HEADER]: installId },
       signal,
     });
-  } catch {
+  } catch (err) {
+    if (__DEV__ && !signal.aborted) console.warn(`[enhance] request to ${enhanceUrl()} failed:`, err);
     throw fail(signal.aborted ? 'cancelled' : 'network');
   }
 
@@ -85,6 +87,9 @@ export async function downloadResult(result: EnhanceSuccess, signal: AbortSignal
     return { uri: file.uri, width: result.width, height: result.height };
   } catch (err) {
     deleteLocalFile(destination.uri);
+    if (__DEV__ && !signal.aborted && !(err instanceof EnhanceRequestError)) {
+      console.warn('[enhance] downloading the result failed:', err);
+    }
     if (err instanceof EnhanceRequestError) throw err;
     throw fail(signal.aborted ? 'cancelled' : 'network');
   }
