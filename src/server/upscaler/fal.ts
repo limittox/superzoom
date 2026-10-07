@@ -23,14 +23,23 @@ interface ModelSpec {
 
 /**
  * The upscale plan for one model: the shared plan, with the factor lowered where the model
- * limits small inputs (never below the 2x minimum). extreme-zoom-100x design decision 7.
+ * limits small inputs. An input that can't fit even at the 2x minimum (a long, narrow image)
+ * is rejected before the provider is called. extreme-zoom-100x design decision 7.
  */
 export function planForModel(spec: ModelSpec, width: number, height: number): UpscalePlan {
   const plan = chooseUpscaleFactor(width, height);
   const limit = spec.smallInput;
   if (!limit || Math.min(width, height) >= limit.minSide) return plan;
-  const fit = Math.min(limit.maxOutput.long / Math.max(width, height), limit.maxOutput.short / Math.min(width, height));
-  const factor = Math.max(LIMITS.minUpscale, Math.min(plan.factor, fit));
+  const { long, short } = limit.maxOutput;
+  const fit = Math.min(long / Math.max(width, height), short / Math.min(width, height));
+  if (fit < LIMITS.minUpscale) {
+    throw new ApiError(
+      'image_too_small',
+      `In this mode, images under ${limit.minSide} px on the short side can be at most ${long / LIMITS.minUpscale} × ${short / LIMITS.minUpscale} px.`,
+      422,
+    );
+  }
+  const factor = Math.min(plan.factor, fit);
   return { factor, outputWidth: Math.floor(width * factor), outputHeight: Math.floor(height * factor) };
 }
 

@@ -163,6 +163,21 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
     expect(planForModel(MODEL_TABLE.creative, 128, 275).factor).toBe(10);
   });
 
+  it('rejects a narrow Enhance input that cannot fit the cap even at 2x', async () => {
+    // 255x5000 at 2x would be 510x10000, beyond SeedVR2's 1920x1080 limit for small inputs.
+    expect(() => planForModel(MODEL_TABLE.enhance, 255, 5000)).toThrow(ApiError);
+    expect(() => planForModel(MODEL_TABLE.enhance, 255, 5000)).toThrow(expect.objectContaining({ code: 'image_too_small' }));
+    expect(planForModel(MODEL_TABLE.enhance, 255, 960).factor).toBe(2);
+    expect(planForModel(MODEL_TABLE.pro, 255, 5000).factor).toBeGreaterThanOrEqual(2);
+
+    const fal = fakeFal();
+    await expect(createFalUpscaler(fal as never).upscale(request('enhance', 255, 5000))).rejects.toMatchObject({
+      code: 'image_too_small',
+    });
+    expect(fal.storage.upload).not.toHaveBeenCalled();
+    expect(fal.subscribe).not.toHaveBeenCalled();
+  });
+
   it.each(['pro', 'creative'] as const)('runs %s in two passes: 4x, then 2.5x on the first output', async (mode) => {
     const fal = fakeFal();
     passOutputs(fal);
