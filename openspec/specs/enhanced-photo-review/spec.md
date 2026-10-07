@@ -40,7 +40,7 @@ After capture, the app SHALL show the original crop immediately and start enhanc
 - **THEN** the app stops waiting, discards any late result, and keeps the original crop available
 
 ### Requirement: Upload preparation
-The app SHALL upload a JPEG copy of the crop downscaled to at most 4 megapixels, keeping its aspect ratio. The full-resolution crop SHALL stay on the device and be used for the comparison and for saving the original.
+The app SHALL upload a JPEG copy of the crop, keeping its aspect ratio: downscaled to at most 4 megapixels, or, for a crop whose short side is under the service's 128-pixel minimum, enlarged so the short side is 128 pixels. The full-resolution crop SHALL stay on the device and be used for the comparison and for saving the original.
 
 #### Scenario: Large crop
 - **WHEN** the captured crop is 12 megapixels
@@ -49,6 +49,10 @@ The app SHALL upload a JPEG copy of the crop downscaled to at most 4 megapixels,
 #### Scenario: Small crop
 - **WHEN** the captured crop is 1.5 megapixels
 - **THEN** the uploaded image keeps its original dimensions
+
+#### Scenario: Tiny crop from extreme zoom
+- **WHEN** the captured crop is 95×204 pixels
+- **THEN** the uploaded image is 128×275 pixels, and the saved original stays 95×204 pixels
 
 ### Requirement: Before/after comparison
 When the enhanced image is ready, the app SHALL show the original and enhanced images aligned at the same framing, with a draggable divider that reveals one on each side. The user SHALL be able to pinch-zoom and pan, and both images SHALL stay aligned.
@@ -62,11 +66,15 @@ When the enhanced image is ready, the app SHALL show the original and enhanced i
 - **THEN** both images zoom and pan together
 
 ### Requirement: AI-enhanced labeling
-The app SHALL clearly label the enhanced image as AI-enhanced and SHALL show the mode used. In Creative mode it SHALL also note that some detail may be invented.
+The app SHALL clearly label the enhanced image as AI-enhanced and SHALL show the mode used. In Creative mode it SHALL also note that some detail may be invented. For a capture beyond the native-pixel limit, it SHALL instead label the result AI-reconstructed, in every mode, and say that most detail was generated.
 
 #### Scenario: Creative result
 - **WHEN** a Creative-mode result is shown
 - **THEN** the result is labeled AI-enhanced (Creative) with a note that some detail may not match reality
+
+#### Scenario: Extreme-zoom result
+- **WHEN** a result is shown for a capture taken beyond the native-pixel limit, in any mode
+- **THEN** it is labeled AI-reconstructed with a note that most detail was generated and may not match reality
 
 ### Requirement: Retry and switch mode
 The app SHALL let the user re-run enhancement on the same crop in any mode without capturing again. When enhancement fails, the app SHALL show a clear message for the error and a retry action.
