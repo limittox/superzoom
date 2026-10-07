@@ -54,23 +54,5 @@
     "test": "jest",
     "typecheck": "tsc --noEmit"
   },
-  "private": true,
-  "jest": {
-    "preset": "jest-expo",
-    "testPathIgnorePatterns": [
-      "/node_modules/",
-      "/android/",
-      "/ios/"
-    ],
-    "passWithNoTests": true,
-    "watchman": false,
-    "transformIgnorePatterns": [
-      "/node_modules/(?!(.pnpm|react-native|@react-native|@react-native-community|expo|@expo|@expo-google-fonts|react-navigation|@react-navigation|@sentry/react-native|native-base|standard-navigation|@upstash|react-native-vision-camera|react-native-nitro-modules|react-native-nitro-image))",
-      "/node_modules/react-native-reanimated/plugin/",
-      "/node_modules/@react-native/babel-preset/"
-    ],
-    "moduleNameMapper": {
-      "^uncrypto$": "<rootDir>/node_modules/uncrypto/dist/crypto.web.cjs"
-    }
-  }
+  "private": true
 }
