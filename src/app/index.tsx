@@ -18,7 +18,7 @@ import { ModePicker } from '@/components/ModePicker';
 import { PermissionScreen } from '@/components/PermissionScreen';
 import { ZoomControls } from '@/components/ZoomControls';
 import { useSession } from '@/state/session';
-import { useSettings } from '@/state/settings';
+import { useSettings, useSettingsHydrated } from '@/state/settings';
 import { colors, formatZoom, spacing } from '@/ui/theme';
 
 export default function CameraScreen() {
@@ -74,6 +74,7 @@ function ZoomCamera() {
   const isActive = useCameraActive();
   const mode = useSettings((s) => s.mode);
   const setMode = useSettings((s) => s.setMode);
+  const settingsHydrated = useSettingsHydrated();
   const [capturing, setCapturing] = useState(false);
 
   // Return at the zoom level the last photo was taken at (specs/enhanced-photo-review: Return to camera).
@@ -194,7 +195,8 @@ function ZoomCamera() {
 
       <SafeAreaView style={styles.overlay} pointerEvents="box-none" edges={['bottom']}>
         <ZoomControls displayZoom={displayZoom} lensInfo={lensInfo} maxZoom={maxDisplayZoom} />
-        <ModePicker value={mode} onChange={setMode} />
+        {/* Disabled until saved settings load, so a choice made now isn't overwritten by hydration. */}
+        <ModePicker value={mode} onChange={setMode} disabled={!settingsHydrated} />
         <Pressable
           onPress={onShutter}
           disabled={capturing}

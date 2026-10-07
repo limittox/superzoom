@@ -25,9 +25,10 @@ export default function ResultScreen() {
   const hydrated = useSettingsHydrated();
   const [consentRequested, setConsentRequested] = useState(false);
   const [consentAnswered, setConsentAnswered] = useState(false);
-  // First capture without a consent decision: ask before uploading anything.
+  // First capture without a consent decision: ask before uploading anything. Never show the
+  // sheet before settings load: hydration would overwrite the answer with the saved one.
   const consentVisible =
-    consentRequested || (hydrated && !!original && cloudConsent === 'unknown' && !consentAnswered);
+    hydrated && (consentRequested || (!!original && cloudConsent === 'unknown' && !consentAnswered));
   const [saving, setSaving] = useState(false);
   const started = useRef(false);
 
@@ -37,6 +38,8 @@ export default function ResultScreen() {
 
   const enhance = useCallback(
     (mode: EnhanceMode) => {
+      // Consent isn't known until settings load; the mode picker is disabled until then.
+      if (!useSettings.persist.hasHydrated()) return;
       if (useSettings.getState().cloudConsent !== 'granted') {
         setConsentRequested(true);
         return;
@@ -110,8 +113,17 @@ export default function ResultScreen() {
     }
 
     setSaving(true);
-    const { outcome, saved } = await saveToGallery(wanted.map((w) => w.uri));
-    setSaving(false);
+    let result: Awaited<ReturnType<typeof saveToGallery>>;
+    try {
+      result = await saveToGallery(wanted.map((w) => w.uri));
+    } catch {
+      // e.g. the permission request itself failed; keep Save usable for a retry.
+      Alert.alert('Save failed', 'The photo could not be saved. Please try again.');
+      return;
+    } finally {
+      setSaving(false);
+    }
+    const { outcome, saved } = result;
     for (const item of wanted) {
       if (!saved.includes(item.uri)) continue;
       markSaved(item.kind === 'original' ? { original: true } : { enhancedMode: shownMode ?? undefined });
@@ -213,7 +225,7 @@ export default function ResultScreen() {
         <Text style={styles.caveat}>Creative mode may invent detail that doesn&apos;t match reality.</Text>
       )}
       <View style={styles.footer}>
-        <ModePicker value={selectedMode} onChange={onSelectMode} completed={results} />
+        <ModePicker value={selectedMode} onChange={onSelectMode} completed={results} disabled={!hydrated} />
       </View>
 
       <ConsentSheet visible={consentVisible} onAccept={() => onConsent(true)} onDecline={() => onConsent(false)} />

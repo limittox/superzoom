@@ -11,6 +11,7 @@ import { type ProcessedCapture, processCapture } from './processCapture';
 const learnedPhotoSize = new Map<string, Size>();
 
 export interface Capture extends ProcessedCapture {
+  /** Zoom the photo actually corresponds to; restored when returning to the camera. */
   displayZoom: number;
   /** The photo was smaller than estimated, so the crop is wider than the preview showed. */
   framingClamped: boolean;
@@ -74,11 +75,14 @@ export function useZoomCamera(previewLongOverShort: number) {
       }
 
       const processed = await processCapture(upright, previewLongOverShort, digitalFactor);
+      const framingClamped = isFramingClamped(upright.width, upright.height, previewLongOverShort, digitalFactor);
+      const maxZoom = computeMaxZoom(lensInfo.opticalCapDisplay, actual.width, actual.height, previewLongOverShort);
       return {
         ...processed,
-        displayZoom: zoom,
-        framingClamped: isFramingClamped(upright.width, upright.height, previewLongOverShort, digitalFactor),
-        maxDisplayZoom: computeMaxZoom(lensInfo.opticalCapDisplay, actual.width, actual.height, previewLongOverShort),
+        // When clamped, the photo matches the corrected max zoom, not the zoom the preview showed.
+        displayZoom: framingClamped ? maxZoom : zoom,
+        framingClamped,
+        maxDisplayZoom: maxZoom,
       };
     } finally {
       busy.current = false;
