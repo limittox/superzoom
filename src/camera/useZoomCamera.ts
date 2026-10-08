@@ -11,6 +11,7 @@ import { analyzeLenses, type LensInfo, splitZoom } from './lenses';
 import { pickBackCamera } from './pickBackCamera';
 import { useLensFactors } from './useLensFactors';
 import { type ProcessedCapture, processCapture } from './processCapture';
+import { resendZoom, type ZoomController } from './resendZoom';
 
 /** Real photo sizes learned from captures at the optical cap, keyed by device and cap. */
 const learnedPhotoSize = new Map<string, Size>();
@@ -67,6 +68,14 @@ export function useZoomCamera(previewLongOverShort: number) {
   );
   const previewScale = useDerivedValue(() =>
     lensInfo ? splitZoom(displayZoom.get(), lensInfo).digitalFactor : 1,
+  );
+
+  /** Pass as the camera's `onStarted`: re-applies the zoom the camera dropped on restart. */
+  const resendCurrentZoom = useCallback(
+    (controller: ZoomController | undefined) => {
+      void resendZoom(controller, () => deviceZoom.get());
+    },
+    [deviceZoom],
   );
 
   const busy = useRef(false);
@@ -137,5 +146,6 @@ export function useZoomCamera(previewLongOverShort: number) {
     maxDisplayZoom,
     nativeLimit,
     capture,
+    resendZoom: resendCurrentZoom,
   };
 }
