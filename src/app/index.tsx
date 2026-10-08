@@ -1,5 +1,5 @@
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, AppState, type LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -15,8 +15,11 @@ import { scheduleOnRN } from 'react-native-worklets';
 
 import { handleCameraError } from '@/camera/cameraErrors';
 import { lensDetent } from '@/camera/lenses';
+import { useBurstLab } from '@/camera/useBurstLab';
 import { useCameraDiagnostics } from '@/camera/useCameraDiagnostics';
+import { useNightLab } from '@/camera/useNightLab';
 import { useZoomCamera } from '@/camera/useZoomCamera';
+import { DevLabBar } from '@/components/DevLabBar';
 import { ModePicker } from '@/components/ModePicker';
 import { PermissionScreen } from '@/components/PermissionScreen';
 import { ZoomControls } from '@/components/ZoomControls';
@@ -91,7 +94,7 @@ function ZoomCamera() {
     nativeLimit,
     resendZoom,
   } = zoomCamera;
-  const isActive = useCameraActive();
+  const screenActive = useCameraActive();
   useCameraDiagnostics(device);
   const mode = useSettings((s) => s.mode);
   const setMode = useSettings((s) => s.setMode);
@@ -105,6 +108,41 @@ function ZoomCamera() {
       if (original) displayZoom.set(captureZoom);
     }, [displayZoom]),
   );
+
+  // Development only: burst capture for the measurement spike (docs/capture-spike.md). The 4K frame
+  // stream is only attached while the lab is on, so normal capture is unchanged.
+  const burstLab = useBurstLab({ photoOutput, lensInfo, displayZoom, previewLongOverShort: longOverShort });
+  const [burstLabOn, setBurstLabOn] = useState(false);
+  const outputs = useMemo(
+    () => (__DEV__ && burstLabOn ? [photoOutput, burstLab.frameOutput] : [photoOutput]),
+    [burstLabOn, burstLab.frameOutput, photoOutput],
+  );
+  const onBurst = useCallback(async () => {
+    try {
+      Alert.alert('Burst saved', await burstLab.runBurst());
+    } catch (err) {
+      Alert.alert('Burst failed', err instanceof Error ? err.message : String(err));
+    }
+  }, [burstLab]);
+
+  // Development only: Night extension A/B (docs/follow-ups.md). It pauses the camera session to take
+  // the Night photo through its own Camera2 session.
+  const nightLab = useNightLab({
+    photoOutput,
+    lensInfo,
+    cameraId: device?.id,
+    displayZoom,
+    previewLongOverShort: longOverShort,
+  });
+  const isActive = screenActive && !nightLab.cameraPaused;
+  const onNight = useCallback(async () => {
+    try {
+      Alert.alert('Night A/B saved', await nightLab.runNight());
+    } catch (err) {
+      console.warn('[night] failed:', err);
+      Alert.alert('Night A/B failed', err instanceof Error ? err.message : String(err));
+    }
+  }, [nightLab]);
 
   // The camera drops its lens zoom on every session restart; resend it (see resendZoom).
   const onCameraStarted = useCallback(() => resendZoom(camera?.controller), [camera, resendZoom]);
@@ -214,9 +252,10 @@ function ZoomCamera() {
               style={StyleSheet.absoluteFill}
               device={device}
               isActive={isActive}
-              outputs={[photoOutput]}
+              outputs={outputs}
               zoom={deviceZoom as SharedValue<number>}
               onStarted={onCameraStarted}
+              onStopped={nightLab.onCameraStopped}
               onError={handleCameraError}
               constraints={CAMERA_CONSTRAINTS}
               resizeMode="cover"
@@ -228,7 +267,22 @@ function ZoomCamera() {
       <Animated.View pointerEvents="none" style={[styles.flash, flashStyle]} />
 
       <SafeAreaView style={styles.overlay} pointerEvents="box-none" edges={['bottom']}>
-        <ZoomControls displayZoom={displayZoom} lensInfo={lensInfo} maxZoom={maxDisplayZoom} nativeLimit={nativeLimit} />
+        {__DEV__ && (
+          <DevLabBar
+            enabled={burstLabOn}
+            running={burstLab.running}
+            onToggle={() => setBurstLabOn((on) => !on)}
+            onBurst={onBurst}
+            nightRunning={nightLab.running}
+            onNight={onNight}
+          />
+        )}
+        <ZoomControls
+          displayZoom={displayZoom}
+          lensInfo={lensInfo}
+          maxZoom={maxDisplayZoom}
+          nativeLimit={nativeLimit}
+        />
         {/* Disabled until saved settings load, so a choice made now isn't overwritten by hydration. */}
         <ModePicker value={mode} onChange={setMode} disabled={!settingsHydrated} />
         <Pressable

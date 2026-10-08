@@ -46,9 +46,65 @@ export interface ExtensionInfo {
   error?: string | null;
 }
 
+/** Largest regular and "high resolution" (slower, burst-incapable) output size of one format. */
+export interface StreamSizes {
+  largest: LensDimensions | null;
+  highRes: LensDimensions | null;
+}
+
+export type StreamFormats = Record<'jpeg' | 'yuv' | 'raw', StreamSizes>;
+
+/** The output sizes one camera offers apps. Fields are null where the OS is too old to report them. */
+export interface CameraSensorModes {
+  id: string;
+  /** The logical camera this physical lens belongs to; null for a top-level camera. */
+  parent: string | null;
+  facing: 'back' | 'front' | 'external';
+  focalLength: number | null;
+  pixelArray: LensDimensions | null;
+  logicalMultiCamera: boolean;
+  raw: boolean;
+  /** ULTRA_HIGH_RESOLUTION_SENSOR: a pixel-binned sensor that can also output unbinned (Android 12+). */
+  ultraHighResolution: boolean | null;
+  remosaicReprocessing: boolean | null;
+  pixelArrayMaxRes: LensDimensions | null;
+  binningFactor: LensDimensions | null;
+  /** Whether capture requests may set SENSOR_PIXEL_MODE. */
+  pixelModeRequestKey: boolean | null;
+  default: StreamFormats | null;
+  /** Sizes in maximum-resolution pixel mode. */
+  maxRes: StreamFormats | null;
+}
+
+export interface SensorModesInfo {
+  sdkInt: number;
+  cameras: CameraSensorModes[];
+  error?: string | null;
+}
+
+/** One photo through the Night extension. Times are milliseconds since the call. */
+export interface NightCaptureResult {
+  /** file:// URI of the JPEG in the app cache. */
+  uri: string;
+  width: number;
+  height: number;
+  bytes: number;
+  /** Degrees the JPEG must turn clockwise to be upright with the phone held in its natural orientation. */
+  sensorOrientation: number | null;
+  zoomRatio: number;
+  /** Whether a preview stream ran before the capture (false: the session refused it). */
+  preview: boolean;
+  previewSize: LensDimensions | null;
+  warmupMs: number;
+  openAttempts: number;
+  timingsMs: Record<string, number>;
+}
+
 declare class LensInfoModule extends NativeModule {
   getLensGeometry(cameraId: string): Promise<LensGeometry | null>;
   getExtensionInfo(cameraId: string): Promise<ExtensionInfo | null>;
+  getSensorModes(): Promise<SensorModesInfo>;
+  captureNight(cameraId: string, zoomRatio: number, warmupMs: number): Promise<NightCaptureResult>;
 }
 
 // Android only. iOS, web and Jest have no native module, so this is null there.
@@ -77,4 +133,29 @@ export async function getExtensionInfo(cameraId: string): Promise<ExtensionInfo 
     if (__DEV__) console.warn('[extension-info] native query failed:', error);
     return null;
   }
+}
+
+/**
+ * Output sizes of every camera and physical lens, including the full-resolution sensor mode
+ * (Android 12+), or null where unavailable. Development diagnostics: can apps reach the
+ * telephoto's unbinned 50 MP?
+ */
+export async function getSensorModes(): Promise<SensorModesInfo | null> {
+  if (!native?.getSensorModes) return null;
+  try {
+    return await native.getSensorModes();
+  } catch (error) {
+    if (__DEV__) console.warn('[sensor-modes] native query failed:', error);
+    return null;
+  }
+}
+
+/**
+ * Development only: takes one photo through the camera's Night extension (Android 12+) at a zoom
+ * ratio, after `warmupMs` of preview for focus and exposure. It opens the camera itself, so the app's
+ * camera session must be stopped first. Rejects where unavailable, including builds without it.
+ */
+export async function captureNight(cameraId: string, zoomRatio: number, warmupMs = 1500): Promise<NightCaptureResult> {
+  if (!native?.captureNight) throw new Error('Night capture needs a development build with the latest lens-info module.');
+  return native.captureNight(cameraId, zoomRatio, warmupMs);
 }

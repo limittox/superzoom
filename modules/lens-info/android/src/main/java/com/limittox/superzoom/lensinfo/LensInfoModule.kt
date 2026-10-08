@@ -6,7 +6,12 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraExtensionCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraMetadata
+import android.hardware.camera2.params.StreamConfigurationMap
 import android.os.Build
+import android.util.Size
+import java.io.File
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -26,6 +31,20 @@ class LensInfoModule : Module() {
 
     AsyncFunction("getExtensionInfo") { cameraId: String ->
       readExtensionInfo(cameraId)
+    }
+
+    AsyncFunction("getSensorModes") {
+      readSensorModes()
+    }
+
+    // Development only: one photo through the Night extension (see NightCapture).
+    AsyncFunction("captureNight") { cameraId: String, zoomRatio: Double, warmupMs: Int, promise: Promise ->
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+        promise.reject("UNSUPPORTED", "Camera extensions need Android 12 or later.", null)
+        return@AsyncFunction
+      }
+      val output = File(context.cacheDir, "night-${System.currentTimeMillis()}.jpg")
+      NightCapture(context, cameraId, zoomRatio.toFloat(), warmupMs.toLong(), output).run(promise)
     }
   }
 
@@ -140,6 +159,92 @@ class LensInfoModule : Module() {
       "captureLatencyMs" to latencyMs,
     )
   }
+
+  /**
+   * Which output sizes every camera (and each physical lens behind a logical camera) offers apps,
+   * including the full-resolution ("maximum resolution", Android 12+) sensor mode that a 50 MP
+   * pixel-binned sensor needs for unbinned photos. Fields are null where the OS is too old to report
+   * them. On failure, `error` names the camera and the exception.
+   */
+  private fun readSensorModes(): Map<String, Any?> {
+    val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    val cameras = mutableListOf<Map<String, Any?>>()
+    val seen = mutableSetOf<String>()
+    val errors = mutableListOf<String>()
+    fun visit(id: String, parent: String?) {
+      if (!seen.add(id)) return
+      try {
+        val chars = manager.getCameraCharacteristics(id)
+        cameras += describeSensorModes(id, parent, chars)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) chars.physicalCameraIds.forEach { visit(it, id) }
+      } catch (e: Throwable) {
+        errors += "$id: ${e.javaClass.name}: ${e.message}"
+      }
+    }
+    try {
+      manager.cameraIdList.forEach { visit(it, null) }
+    } catch (e: Throwable) {
+      errors += "cameraIdList: ${e.javaClass.name}: ${e.message}"
+    }
+    return mapOf(
+      "sdkInt" to Build.VERSION.SDK_INT,
+      "cameras" to cameras,
+      "error" to errors.takeIf { it.isNotEmpty() }?.joinToString("; "),
+    )
+  }
+
+  private fun describeSensorModes(id: String, parent: String?, chars: CameraCharacteristics): Map<String, Any?> {
+    val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toSet() ?: emptySet()
+    val s = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val maxResMap: StreamConfigurationMap? =
+      if (s) {
+        runCatching { chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION) }.getOrNull()
+      } else {
+        null
+      }
+    return mapOf(
+      "id" to id,
+      "parent" to parent,
+      "facing" to
+        when (chars.get(CameraCharacteristics.LENS_FACING)) {
+          CameraMetadata.LENS_FACING_BACK -> "back"
+          CameraMetadata.LENS_FACING_FRONT -> "front"
+          else -> "external"
+        },
+      "focalLength" to chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()?.toDouble(),
+      "pixelArray" to chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)?.let(::sizeMap),
+      "logicalMultiCamera" to (CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA in caps),
+      "raw" to (CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW in caps),
+      "ultraHighResolution" to
+        if (s) CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_ULTRA_HIGH_RESOLUTION_SENSOR in caps else null,
+      "remosaicReprocessing" to
+        if (s) CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_REMOSAIC_REPROCESSING in caps else null,
+      "pixelArrayMaxRes" to
+        if (s) chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE_MAXIMUM_RESOLUTION)?.let(::sizeMap) else null,
+      "binningFactor" to if (s) chars.get(CameraCharacteristics.SENSOR_INFO_BINNING_FACTOR)?.let(::sizeMap) else null,
+      // Whether a capture request may set SENSOR_PIXEL_MODE (default vs maximum resolution).
+      "pixelModeRequestKey" to
+        if (s) chars.availableCaptureRequestKeys.any { it.name == CaptureRequest.SENSOR_PIXEL_MODE.name } else null,
+      "default" to describeStreams(chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)),
+      "maxRes" to maxResMap?.let(::describeStreams),
+    )
+  }
+
+  /** Largest regular and "high resolution" (slower, burst-incapable) size per format. */
+  private fun describeStreams(map: StreamConfigurationMap?): Map<String, Any?>? {
+    map ?: return null
+    fun largest(sizes: Array<Size>?): Map<String, Int>? =
+      sizes?.maxByOrNull { it.width.toLong() * it.height }?.let(::sizeMap)
+    val formats = mapOf("jpeg" to ImageFormat.JPEG, "yuv" to ImageFormat.YUV_420_888, "raw" to ImageFormat.RAW_SENSOR)
+    return formats.mapValues { (_, format) ->
+      mapOf(
+        "largest" to largest(runCatching { map.getOutputSizes(format) }.getOrNull()),
+        "highRes" to largest(runCatching { map.getHighResolutionOutputSizes(format) }.getOrNull()),
+      )
+    }
+  }
+
+  private fun sizeMap(size: Size): Map<String, Int> = mapOf("w" to size.width, "h" to size.height)
 
   private fun extensionName(ext: Int): String =
     when (ext) {

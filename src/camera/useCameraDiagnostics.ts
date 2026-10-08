@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
 import { type CameraDevice, useCameraDeviceExtensions, useCameraDevices } from 'react-native-vision-camera';
 
+import { getSensorModes } from '../../modules/lens-info';
+
 function largestPhoto(device: CameraDevice): string {
   try {
     const sizes = device.getSupportedResolutions('photo');
@@ -46,4 +48,18 @@ export function useCameraDiagnostics(selected: CameraDevice | undefined) {
     const summary = extensions.map((e) => `${e.type}${e.supportsFrameStreaming ? ' (frame streaming)' : ''}`);
     console.log(`[camera-extensions] camera ${selected.id}: ${summary.length ? summary.join(', ') : 'none'}`);
   }, [extensions, selected]);
+
+  // Can apps reach a lens's full, unbinned resolution (e.g. the 50 MP telephoto)? Logged once per launch.
+  useEffect(() => {
+    if (!__DEV__) return;
+    let cancelled = false;
+    getSensorModes().then((info) => {
+      if (cancelled || !info) return;
+      if (info.error) console.warn(`[sensor-modes] ${info.error}`);
+      for (const camera of info.cameras) console.log(`[sensor-modes] ${JSON.stringify(camera)}`);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 }

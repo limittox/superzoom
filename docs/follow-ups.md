@@ -24,18 +24,19 @@ Implemented and working on Android, but not verified:
 ## Ideas
 
 - **Sensor-crop zoom (Samsung 2x/10x):** use high-resolution sensor crops instead of digital crops where the phone exposes them. Start by measuring whether hardware zoom past a lens is sharper than the app's own crop.
-- **Multi-frame burst capture** (requested 2026-10-07; out of scope for `add-zoom-camera-mvp` and `extreme-zoom-100x`). Capture a short burst at the current zoom, align the frames (hand shake gives sub-pixel offsets), and merge them before upscaling, as in Google's "Handheld Multi-Frame Super-Resolution" (Super Res Zoom). That recovers real detail rather than inventing it, which matters most past the native-pixel limit. Things to work out:
-  - **Capture:** whether VisionCamera 5 can deliver a fast burst at full resolution (photo output in a loop, or a frame processor at the preview stream's resolution), or whether RAW (DNG) bursts are reachable on the Samsung.
-  - **Alignment and merge:** native code (Kotlin/Swift, or C++ in a frame processor) for speed. Only the cropped region needs merging, which keeps it cheap at high zoom.
-  - **Robustness:** moving subjects and large shakes need per-tile rejection to avoid ghosting.
-  - **Measure first:** compare a merged 30x/100x crop against a single frame before and after enhancement, to confirm the gain is worth the complexity.
-- **Close the quality gap with the native camera** (reported 2026-10-07: Samsung's own 30x looks better than superzoom's enhanced 30x). Likely causes, biggest first:
-  - The native app crops the 5x telephoto at full sensor resolution (about 50 MP) past 10x. VisionCamera tops out at 4080×3060 (12.5 MP, pixel-binned), so the native 30x frame has about 4 times more real pixels.
+- ~~**Multi-frame burst capture**~~ (requested 2026-10-07). Measured 2026-10-08 and shelved: an 8-photo burst took about 11 s, and after SeedVR2 the merged 30x crop looked no better than one photo, because the phone already merges frames for each photo. Results, tooling and notes for a rerun are in `docs/capture-spike.md`.
+- **Close the quality gap with the native camera** (reported 2026-10-07: Samsung's own 30x looks better than superzoom's enhanced 30x). **Spike closed 2026-10-09** (`docs/capture-spike.md`): on this Samsung the biggest cause (50 MP readout) isn't reachable, and neither merging nor pre-upload cleanup beat one photo plus SeedVR2. Rerun the `[sensor-modes]` check on other phones. Likely causes, biggest first:
+  - The native app crops the 5x telephoto at full sensor resolution (about 50 MP) past 10x. VisionCamera tops out at 4080×3060 (12.5 MP, pixel-binned), so the native 30x frame has about 4 times more real pixels. **Not reachable by apps on this phone** (checked 2026-10-08, see below).
   - It merges several frames.
   - It processes raw sensor data with phone-specific models. Our upscaler gets one compressed JPEG crop.
   - Small own losses: JPEG at quality 95, then 90 for upload.
 
   Experiments:
+  - ~~Check whether apps can reach the full, unbinned sensor resolution.~~ Checked 2026-10-08 (`getSensorModes` in `modules/lens-info`, `[sensor-modes]` dev log; Android 16). **No.**
+    - No lens has the `ULTRA_HIGH_RESOLUTION_SENSOR` capability, and capture requests can't set `SENSOR_PIXEL_MODE`.
+    - The 0.6x, 1x and 5x lenses (ids 2, 5, 7) report 2×2 binning. Their "maximum resolution" pixel array is still 4080×3060, and their maximum-resolution stream map offers only 1920×1080.
+    - No camera lists high-resolution (slow-capture) sizes. The largest JPEG, YUV and RAW output is 4080×3060 (4000×3000 on the 3x lens, id 6, which isn't binned).
+    - So Samsung keeps the 50 MP mode for its own app. What apps do get is `RAW_SENSOR` at 4080×3060 on every lens: unprocessed, but binned.
   - ~~Check which CameraX extensions the phone exposes.~~ Checked 2026-10-07 (`[camera-extensions]` dev log). The Samsung's Back Quad Camera offers only `bokeh`, `face-retouch` and `night`; Auto and HDR aren't exposed to third-party apps. Night (multi-frame low light) is the only candidate. VisionCamera 5.2.3 can't enable extensions, so it would need native CameraX code, and whether zoom and lens switching work in Night mode is untested. Own multi-frame burst capture looks more promising. Research notes (2026-10-07):
     - Night merges several exposures and "can take several seconds, and the user should hold the phone still". Extensions cover preview and still capture only.
     - Extension sessions can have "a reduced set of camera capabilities (such as limited zoom ratio range…)". Zoom ratio support in Night is only mandatory for devices launching on Android 15 or later, so it had to be queried.
@@ -45,6 +46,8 @@ Implemented and working on Android, but not verified:
       - Using it needs a native Camera2 `CameraExtensionSession` (or CameraX `ExtensionsManager`) capture path alongside VisionCamera's, and a check of how long a Night capture takes in daylight.
       - Android's extension service is process-wide: when our query ran alongside VisionCamera's `useCameraDeviceExtensions`, our client's release unbound the service under CameraX and its lookup failed with "Service not registered". The dev log no longer calls `getExtensionInfo`; the function stays for a future Night capture path, which must not overlap other extension calls.
     - VisionCamera 5.2.3 bundles CameraX 1.7.0-alpha03, including `camera-extensions`, so it's unaffected by Google removing extension support for CameraX ≤ 1.5 from 2026-11-01. Using Night would still need our own native extension session in place of VisionCamera's.
+  - ~~**Night A/B**~~ Tested 2026-10-08/09: worse than a normal photo at 30x after SeedVR2; at 100x slightly crisper but it misread more letters. Not worth a capture path that blacks out the preview for about 3 s. Details in `docs/capture-spike.md`.
+  - ~~Denoise or soften small crops before upload.~~ Tested 2026-10-09: denoising smears texture and leads SeedVR2 to invent letters; softening changes nothing (`docs/capture-spike.md`).
   - Send small crops as lossless PNG.
   - Benchmark our raw crop (before AI) against the native 30x, to separate input quality from model quality.
   - Multi-frame burst capture and the model evaluation below.

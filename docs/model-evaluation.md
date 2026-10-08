@@ -36,6 +36,7 @@ Notes:
 - Models limited to 4x per request run two passes for bigger factors, as production does. A second pass under 1.25x is skipped in favor of one full 4x pass.
 - SeedVR2 keeps production's rule for inputs under 256 px: the output is capped at 1920 × 1080.
 - Costs are estimates from fal's pricing pages and run high for two-pass Topaz runs.
+- SeedVR2 isn't deterministic: two runs on the same 100x crop differed visibly in crispness (2026-10-09, `docs/capture-spike.md`). Don't decide a close call on one run of one crop.
 
 ## 3. Compare
 
