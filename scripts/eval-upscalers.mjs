@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 /**
  * Model evaluation: runs every crop in a folder through a set of fal upscalers and settings,
  * downloads the results, and records size, time and estimated cost. See docs/model-evaluation.md.
@@ -7,6 +7,7 @@
  *   node scripts/eval-upscalers.mjs                      # run them (spends fal credit)
  *   node scripts/eval-upscalers.mjs --only topaz-lowres-v2,seedvr2 --crops eval/crops
  *   node scripts/eval-upscalers.mjs --max-crop-mp 0.3   # only the small (extreme-zoom) crops
+ *   node scripts/eval-upscalers.mjs --min-crop-mp 0.3   # only the larger crops
  *
  * Reads FAL_KEY from the environment or .env.local. Outputs go to eval/runs/<timestamp>/.
  * Crops come from the dev server's upload saver (SAVE_UPLOADS_DIR), whose file names end in
@@ -113,6 +114,28 @@ const CANDIDATES = [
     cost: () => 0.004,
   },
   {
+    // A prompt-driven image editor, not an upscaler: it gets the crop enlarged to the output size
+    // (it needs 384â€“2048 px per side) and an explicit image_size, and is told to restore it.
+    id: 'qwen-image3-edit',
+    label: 'Qwen Image 3 Edit (restore prompt)',
+    endpoint: 'alibaba/qwen-image-3/edit',
+    edit: { maxSide: 2048, minSide: 384, maxPixels: 4_000_000 },
+    input: (url, _f, size) => ({
+      image_urls: [url],
+      prompt:
+        'Restore this zoomed-in photo: make it sharp and clear, recover fine detail and texture, and remove blur, ' +
+        'noise and compression artifacts. Keep exactly the same scene, framing, composition, colors and any text. ' +
+        'Do not add, remove or move anything.',
+      negative_prompt: 'blurry, noisy, jpeg artifacts, extra objects, changed text, cartoon, painting, illustration',
+      image_size: size,
+      enable_prompt_expansion: false,
+      output_format: 'jpeg',
+      num_images: 1,
+    }),
+    // $0.04 per image at 1K, $0.075 at 2K.
+    cost: (mp) => (mp > 1.1 ? 0.075 : 0.04),
+  },
+  {
     id: 'aura-sr',
     label: 'AuraSR v2 (4x)',
     endpoint: 'fal-ai/aura-sr',
@@ -147,7 +170,21 @@ function planPasses(factor, maxPerPass) {
   return passes;
 }
 
+/** Output size for an editing model: as large as it allows, keeping the crop's aspect ratio. */
+function editSize(edit, crop) {
+  const { width: w, height: h } = crop;
+  const scale = Math.min(edit.maxSide / Math.max(w, h), Math.sqrt(edit.maxPixels / (w * h)));
+  const size = { width: Math.round(w * scale), height: Math.round(h * scale) };
+  if (Math.min(size.width, size.height) < edit.minSide) throw new Error(`${crop.file} is too narrow for this editing model`);
+  return size;
+}
+
 function planRun(candidate, crop) {
+  if (candidate.edit) {
+    const size = editSize(candidate.edit, crop);
+    const mp = (size.width * size.height) / 1e6;
+    return { factor: size.width / crop.width, passes: [1], size, outputMp: mp, cost: candidate.cost(mp) };
+  }
   if (candidate.fixedFactor) {
     const factor = candidate.id === 'aura-sr' ? 4 : null;
     const mp = factor ? (crop.width * factor * crop.height * factor) / 1e6 : (crop.width * crop.height * 4) / 1e6;
@@ -176,7 +213,8 @@ async function main() {
       return { file, path: join(CROPS_DIR, file), width: Number(m[1]), height: Number(m[2]) };
     })
     // --max-crop-mp 0.3: only the small crops (extreme zoom), where the model does the most work.
-    .filter((c) => !args['max-crop-mp'] || (c.width * c.height) / 1e6 <= Number(args['max-crop-mp']));
+    .filter((c) => !args['max-crop-mp'] || (c.width * c.height) / 1e6 <= Number(args['max-crop-mp']))
+    .filter((c) => !args['min-crop-mp'] || (c.width * c.height) / 1e6 > Number(args['min-crop-mp']));
   const only = args.only ? new Set(args.only.split(',')) : null;
   const candidates = CANDIDATES.filter((c) => !only || only.has(c.id));
   if (crops.length === 0) throw new Error(`No crops in ${CROPS_DIR}`);
@@ -187,11 +225,11 @@ async function main() {
       .map((candidate) => ({ crop, candidate, ...planRun(candidate, crop) })),
   );
   const total = runs.reduce((sum, r) => sum + r.cost, 0);
-  console.log(`${crops.length} crops × ${candidates.length} candidates = ${runs.length} runs, about $${total.toFixed(2)}`);
+  console.log(`${crops.length} crops Ã— ${candidates.length} candidates = ${runs.length} runs, about $${total.toFixed(2)}`);
   for (const r of runs) {
     console.log(
       `  ${r.crop.file.padEnd(44)} ${r.candidate.id.padEnd(18)} ` +
-        `${r.factor ? `${r.factor.toFixed(2)}x` : 'fixed'} in ${r.passes.length} pass(es) → ${r.outputMp.toFixed(1)} MP  $${r.cost.toFixed(3)}`,
+        `${r.factor ? `${r.factor.toFixed(2)}x` : 'fixed'} in ${r.passes.length} pass(es) â†’ ${r.outputMp.toFixed(1)} MP  $${r.cost.toFixed(3)}`,
     );
   }
   if (DRY_RUN) return;
@@ -243,10 +281,11 @@ async function execute(fal, run, upload) {
   };
   try {
     let url = candidate.png ? upload.png : upload.jpg;
+    if (run.size) url = await enlargedUpload(fal, crop, run.size);
     let image;
     for (const factor of run.passes) {
-      const result = await fal.subscribe(candidate.endpoint, { input: candidate.input(url, factor) });
-      image = result.data?.image;
+      const result = await fal.subscribe(candidate.endpoint, { input: candidate.input(url, factor, run.size) });
+      image = result.data?.image ?? result.data?.images?.[0];
       if (!image?.url) throw new Error(`No image in the response: ${JSON.stringify(result.data).slice(0, 300)}`);
       url = image.url;
     }
@@ -261,6 +300,20 @@ async function execute(fal, run, upload) {
     console.log(`  FAIL ${crop.file} ${candidate.id}: ${record.error}`);
   }
   return record;
+}
+
+/** Enlarges a crop locally (Lanczos) to an editing model's output size and uploads it. */
+async function enlargedUpload(fal, crop, size) {
+  const path = join(OUT_DIR, `${basename(crop.file).replace(/\.\w+$/, '')}__${size.width}x${size.height}.jpg`);
+  execFileSync('python', [
+    '-c',
+    'import sys;from PIL import Image;Image.open(sys.argv[1]).convert("RGB").resize((int(sys.argv[3]),int(sys.argv[4])),Image.Resampling.LANCZOS).save(sys.argv[2],quality=95)',
+    crop.path,
+    path,
+    String(size.width),
+    String(size.height),
+  ]);
+  return fal.storage.upload(new Blob([readFileSync(path)], { type: 'image/jpeg' }));
 }
 
 // ---------------------------------------------------------------------------------------------

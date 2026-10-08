@@ -61,8 +61,9 @@ export function planPasses(factor: number, maxPerPass: number): number[] {
 }
 
 /**
- * Mode → fal model. Endpoint IDs and parameters checked against
- * https://fal.ai/models/<endpoint>/llms.txt on 2026-10-07.
+ * Mode → fal model, chosen in the 2026-10-08 evaluation on real phone crops
+ * (docs/model-evaluation.md). Endpoint IDs and parameters checked against
+ * https://fal.ai/models/<endpoint>/llms.txt on 2026-10-08.
  */
 export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
   enhance: {
@@ -76,25 +77,32 @@ export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
       upscale_mode: 'factor',
       upscale_factor: factor,
       output_format: 'jpg',
+      // Beat the default 0.1 on every test crop, from 4.6x to 100x.
+      noise_scale: 0.3,
     }),
   },
   pro: {
-    endpoint: 'fal-ai/topaz/upscale/image',
+    // The most faithful result in the evaluation: sharp edges, no invented detail.
+    endpoint: 'topaz/upscale/image/precision',
     maxFactorPerPass: 4,
     buildInput: (imageUrl, factor) => ({
       image_url: imageUrl,
-      model: 'High Fidelity V2',
+      model: 'Low Resolution V2',
       upscale_factor: factor,
       output_format: 'jpeg',
       face_enhancement_creativity: 0,
     }),
   },
   creative: {
-    endpoint: 'fal-ai/clarity-upscaler',
+    // Rebuilds fine texture (and invents some), which the app's Creative label already says.
+    endpoint: 'topaz/upscale/image/generative',
     maxFactorPerPass: 4,
     buildInput: (imageUrl, factor) => ({
       image_url: imageUrl,
+      model: 'Recovery V2',
       upscale_factor: factor,
+      output_format: 'jpeg',
+      face_enhancement_creativity: 0,
     }),
   },
 };
@@ -150,7 +158,9 @@ export function createFalUpscaler(
   async function submitPass(mode: EnhanceMode, sourceUrl: string, passes: number[], index: number) {
     const spec = MODEL_TABLE[mode];
     if (process.env.NODE_ENV !== 'production') {
-      console.info(`[fal] ${mode} pass ${index + 1}/${passes.length}: ${spec.endpoint} at ${passes[index].toFixed(2)}x`);
+      console.info(
+        `[fal] ${mode} pass ${index + 1}/${passes.length}: ${spec.endpoint} at ${passes[index].toFixed(2)}x`,
+      );
     }
     // Aborted rather than abandoned on timeout: walking away from a submit fal still accepts
     // would leave a paid pass with no handle to cancel it.

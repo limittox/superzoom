@@ -105,13 +105,13 @@ The mapping lives in `MODEL_TABLE` in [`src/server/upscaler/fal.ts`](../src/serv
 
 | Mode | fal endpoint | Max factor per request | Approx. cost at the 16 MP cap | Approx. cost for a 100x crop (128 × 275 upload) |
 |---|---|---|---|---|
-| `enhance` | `fal-ai/seedvr/upscale/image` | 10x | $0.016 | $0.002 (one pass, ≈1.7 MP out) |
-| `pro` | `fal-ai/topaz/upscale/image` (High Fidelity V2) | 4x | $0.08 | $0.16 (two passes, ≈3.5 MP out) |
-| `creative` | `fal-ai/clarity-upscaler` | 4x | $0.48 | $0.12 (two passes, ≈3.5 MP out) |
+| `enhance` | `fal-ai/seedvr/upscale/image` (SeedVR2, `noise_scale` 0.3) | 10x | $0.016 | $0.002 (one pass, ≈1.7 MP out) |
+| `pro` | `topaz/upscale/image/precision` (Low Resolution V2) | 4x | $0.08 | $0.16 (two passes, ≈3.5 MP out) |
+| `creative` | `topaz/upscale/image/generative` (Recovery V2) | 4x | $0.32 | $0.16 (two passes, ≈3.5 MP out) |
 
-Prices are fal's listed prices as of 2026-10-07. Uploaded inputs and generated outputs are set to expire from fal's storage after one hour.
+Prices are fal's listed prices as of 2026-10-08: SeedVR2 bills per output megapixel, Topaz Precision $0.08 per started 24 MP of output per request, and Topaz Generative $0.08 per started 4 MP per request. The models were chosen in a side-by-side evaluation on real phone crops (`docs/model-evaluation.md`). Uploaded inputs and generated outputs are set to expire from fal's storage after one hour.
 
-**Two-pass upscaling.** The route picks one upscale factor per photo (see limits below). When it exceeds a model's per-request maximum, as with tiny crops from extreme zoom in Pro or Creative, the job runs the model twice: first at its maximum (4x), then at the remainder (for example 2.5x) on the first pass's output. Each pass has its own 120-second timeout. Topaz bills per image, so Pro costs about twice as much in that case; Clarity bills per output megapixel, so its first, small pass is cheap.
+**Two-pass upscaling.** The route picks one upscale factor per photo (see limits below). When it exceeds a model's per-request maximum, as with tiny crops from extreme zoom in Pro or Creative, the job runs the model twice: first at its maximum (4x), then at the remainder (for example 2.5x) on the first pass's output. Each pass has its own 120-second timeout. Topaz bills per request (by output size), so Pro and Creative cost about twice as much in that case.
 
 ## Limits enforced by the route
 

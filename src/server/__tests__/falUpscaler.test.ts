@@ -68,8 +68,8 @@ async function startedJob(fal: ReturnType<typeof fakeFal>, mode: Mode, width = 1
 describe('fal upscaler: start', () => {
   it.each([
     ['enhance', 'fal-ai/seedvr/upscale/image'],
-    ['pro', 'fal-ai/topaz/upscale/image'],
-    ['creative', 'fal-ai/clarity-upscaler'],
+    ['pro', 'topaz/upscale/image/precision'],
+    ['creative', 'topaz/upscale/image/generative'],
   ] as const)('%s mode uploads and queues pass 1 on %s with the chosen factor', async (mode, endpoint) => {
     const fal = fakeFal();
     const started = await upscalerFor(fal).start(start(mode, 2000, 1500));
@@ -99,6 +99,18 @@ describe('fal upscaler: start', () => {
 
   it('every mode has a model', () => {
     expect(Object.keys(MODEL_TABLE).sort()).toEqual(['creative', 'enhance', 'pro']);
+  });
+
+  it('sends the settings chosen in the model evaluation', () => {
+    expect(MODEL_TABLE.enhance.buildInput('u', 4)).toMatchObject({ upscale_factor: 4, noise_scale: 0.3 });
+    expect(MODEL_TABLE.pro.buildInput('u', 4)).toMatchObject({
+      model: 'Low Resolution V2',
+      face_enhancement_creativity: 0,
+    });
+    expect(MODEL_TABLE.creative.buildInput('u', 4)).toMatchObject({
+      model: 'Recovery V2',
+      face_enhancement_creativity: 0,
+    });
   });
 
   it('maps an upload or submit failure to provider_error without leaking details, and reports it to the hook', async () => {
@@ -188,7 +200,7 @@ describe('fal upscaler: advance', () => {
     });
     const next = await at(job.passQueuedAt! + LIMITS.providerTimeoutMs + 1, () => upscaler.advance(job));
     expect(next).toMatchObject({ status: 'failed', error: { code: 'timeout' } });
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/clarity-upscaler', { requestId: 'fal-1' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/generative', { requestId: 'fal-1' });
   });
 
   it('keeps the job unchanged when a status check fails, until the timeout', async () => {
@@ -277,7 +289,7 @@ describe('fal upscaler: cancel', () => {
     const job = await startedJob(fal, 'pro');
     fal.queue.cancel.mockRejectedValueOnce(new Error('already running'));
     await expect(upscalerFor(fal).cancel(job)).resolves.toBeUndefined();
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-1' });
   });
 
   it('does nothing for a finished job', async () => {
@@ -412,7 +424,7 @@ describe('extreme-zoom upscaling (two passes for 4x models)', () => {
       status: 'failed',
       error: { code: 'timeout' },
     });
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-2' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-2' });
   });
 
   it('maps a failure to queue pass 2 to provider_error', async () => {

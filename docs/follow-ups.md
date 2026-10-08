@@ -48,9 +48,5 @@ Implemented and working on Android, but not verified:
   - Send small crops as lossless PNG.
   - Benchmark our raw crop (before AI) against the native 30x, to separate input quality from model quality.
   - Multi-frame burst capture and the model evaluation below.
-- **Evaluate the enhancement models and find better fits** (requested 2026-10-07). Today: Enhance = SeedVR2, Pro = Topaz High Fidelity V2, Creative = Clarity Upscaler (`MODEL_TABLE` in `src/server/upscaler/fal.ts`). Suggested approach:
-  - **Test set:** real crops from the phone at several zooms (e.g. 3x, 10x, 30x, 100x) and subjects (text, faces, foliage, buildings, low light), including the original-lens reference where possible (e.g. a 5x lens shot to judge a 1x-plus-crop result).
-  - **Candidates:** the current three, the other Topaz models on fal (Topaz lists Recovery V2 for "extreme low-resolution images", which may suit 30x–100x crops, plus Standard V2 and Wonder 3), and other fal upscalers worth checking (search fal's upscaling category). Check each one's per-request factor limit and pricing.
-  - **Judge:** blind side-by-side comparisons (fidelity versus invented detail), plus latency and cost per result. Possibly a no-reference quality score as a tiebreaker.
-  - **Outcome:** possibly different models per zoom tier (optical, AI zoom, AI-reconstructed) rather than per mode. That's a server-only change to the model table.
+- ~~**Evaluate the enhancement models and find better fits**~~ (requested 2026-10-07). Done 2026-10-08 (`docs/model-evaluation.md`): Enhance now uses SeedVR2 with `noise_scale` 0.3, Pro Topaz Precision Low Resolution V2, and Creative Topaz Generative Recovery V2. No model recovers real detail at 100x; more real input pixels (multi-frame burst, full-resolution sensor crops) are the next lever. Worth re-running the evaluation when fal adds upscalers.
 - **Telephoto fallback notice:** tell the user when the phone used a wider lens's crop at a telephoto zoom (close or dim subjects), using the EXIF focal length outside development builds.

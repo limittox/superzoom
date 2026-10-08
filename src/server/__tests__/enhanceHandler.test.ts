@@ -112,7 +112,7 @@ describe('POST /api/enhance (submit)', () => {
     await submitted(handlers);
     await submitted(handlers, { mode: 'pro', requestId: '1f8fad5b-d9cb-469f-a165-70867728950e' });
     expect((await jobs.get('job-1'))!.mode).toBe('enhance');
-    expect((fal.queue.submit.mock.calls[1] as unknown as [string])[0]).toBe('fal-ai/topaz/upscale/image');
+    expect((fal.queue.submit.mock.calls[1] as unknown as [string])[0]).toBe('topaz/upscale/image/precision');
   });
 
   it('returns the same job for a resubmission, running and charging it once', async () => {
@@ -322,7 +322,7 @@ describe('races between submissions, status checks and cancels', () => {
 
     release();
     await submit;
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-1' });
     expect((await poll(handlers, 'job-1')).body.status).toBe('cancelled');
   });
 
@@ -344,7 +344,7 @@ describe('races between submissions, status checks and cancels', () => {
     expect((await check).body.status).toBe('cancelled');
     // Pass 2 was queued by the check and immediately cancelled.
     expect(fal.queue.submit).toHaveBeenCalledTimes(2);
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/clarity-upscaler', { requestId: 'fal-2' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/generative', { requestId: 'fal-2' });
     expect((await poll(handlers, jobId)).body.status).toBe('cancelled');
     expect(fal.queue.submit).toHaveBeenCalledTimes(2);
     expect(logs.filter((l) => l.outcome === 'cancelled')).toHaveLength(1);
@@ -359,7 +359,7 @@ describe('races between submissions, status checks and cancels', () => {
     });
     const res = await poll(handlers, jobId);
     expect(res.status).toBe(503);
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-2' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-2' });
     // The stored job still points at pass 1, so the next check queues pass 2 again.
     (jobs.put as jest.Mock).mockImplementation(put);
     expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 2 });
@@ -387,7 +387,7 @@ describe('races between submissions, status checks and cancels', () => {
 
     release();
     expect((await submit).body).toEqual({ jobId: 'job-1' });
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-1' });
     expect((await poll(handlers, 'job-1')).body).toMatchObject({ status: 'failed', error: { code: 'timeout' } });
   });
 
@@ -399,7 +399,7 @@ describe('races between submissions, status checks and cancels', () => {
       const res = await call(handlers.submit, makeRequest({ mode: 'pro' }));
       expect(res.status).toBe(503);
       expect(fal.queue.submit).toHaveBeenCalledTimes(1);
-      expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
+      expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-1' });
     },
   );
 
@@ -523,7 +523,7 @@ describe('GET /api/enhance/{jobId} (status)', () => {
     fal.queue.status.mockResolvedValue({ status: 'IN_QUEUE' });
     clock.now += LIMITS.providerTimeoutMs + 1;
     expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'failed', error: { code: 'timeout' } });
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-1' });
     expect(logs.at(-1)).toMatchObject({ outcome: 'timeout', mode: 'pro' });
   });
 
@@ -585,7 +585,7 @@ describe('DELETE /api/enhance?requestId= (cancel a submission)', () => {
     const jobId = await submitted(handlers, { mode: 'pro' });
     const res = await call(handlers.cancelSubmission, cancelRequest());
     expect(res.body).toMatchObject({ jobId, status: 'cancelled' });
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/topaz/upscale/image', { requestId: 'fal-1' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-1' });
   });
 
   it("doesn't touch another installation's job and requires a UUID", async () => {
@@ -605,7 +605,7 @@ describe('DELETE /api/enhance/{jobId} (cancel)', () => {
     const jobId = await submitted(handlers, { mode: 'creative', image: makeJpeg(128, 275) });
     const res = await call((r) => handlers.cancel(r, jobId), jobRequest(jobId, 'DELETE'));
     expect(res.body).toEqual({ jobId, status: 'cancelled', mode: 'creative' });
-    expect(fal.queue.cancel).toHaveBeenCalledWith('fal-ai/clarity-upscaler', { requestId: 'fal-1' });
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/generative', { requestId: 'fal-1' });
     expect(logs.at(-1)).toMatchObject({ outcome: 'cancelled', mode: 'creative' });
 
     expect((await poll(handlers, jobId)).body.status).toBe('cancelled');

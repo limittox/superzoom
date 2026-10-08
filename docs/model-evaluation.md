@@ -49,4 +49,8 @@ This writes same-size display copies of every result to `eval/runs/<name>/report
 
 | Date | Run | Crops | Candidates | Outcome |
 |---|---|---|---|---|
-| 2026-10-08 | `small-1` | 4 small crops: text, building and texture at 30x, far detail at 100x | 10 | (in progress) |
+| 2026-10-08 | `small-1` | 4 small crops: text, building and texture at 30x, far detail at 100x | 10 | Picked: SeedVR2 with `noise_scale` 0.3 for text and far detail; Topaz Generative Recovery V2 for building and texture. Never picked: the current Pro (Topaz High Fidelity V2) and Creative (Clarity). Recraft Crisp and AuraSR were barely better than bicubic. Nothing recovers real detail at 100x. |
+| 2026-10-08 | `large-1` | 4 larger crops: text, foliage and dim light at 10x, face at 4.6x | 4 finalists | `noise_scale` 0.3 also better at 10x. |
+| 2026-10-08 | `qwen-1` | all 8 | Qwen Image 3 Edit (`alibaba/qwen-image-3/edit`), "restore, keep everything" prompt | Barely better than bicubic, sometimes shifts the framing, capped at 2048 px per side (about 2 MP), 27–130 s per image. Not used. |
+
+**Outcome (2026-10-08):** Enhance → SeedVR2 with `noise_scale` 0.3; Pro → Topaz Precision Low Resolution V2 (the most faithful, matching Pro's "highest fidelity"); Creative → Topaz Generative Recovery V2 (rebuilds texture, invents some). Cost about $4.30 in fal credit for the three runs.
