@@ -30,7 +30,9 @@ def save_display(image, size, path):
 def main(run_dir):
     run = Path(run_dir)
     results = json.loads((run / 'results.json').read_text(encoding='utf-8'))
-    crops_dir = Path('eval/crops')
+    # The folder the run read its crops from (run.json), else the default.
+    meta = run / 'run.json'
+    crops_dir = Path(json.loads(meta.read_text(encoding='utf-8'))['cropsDir']) if meta.exists() else Path('eval/crops')
     out = run / 'report'
     out.mkdir(exist_ok=True)
 

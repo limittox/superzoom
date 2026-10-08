@@ -30,6 +30,14 @@ export interface UploadFs {
 const nodeFs = (): Promise<UploadFs> => import('node:fs/promises');
 
 /**
+ * The development upload saver, or undefined: only with `NODE_ENV=development` and
+ * `SAVE_UPLOADS_DIR` set. Production never keeps uploads (specs/image-enhancement: No image retention).
+ */
+export function uploadSaverFromEnv(env: Record<string, string | undefined>): SaveUpload | undefined {
+  return env.NODE_ENV === 'development' && env.SAVE_UPLOADS_DIR ? createUploadSaver(env.SAVE_UPLOADS_DIR) : undefined;
+}
+
+/**
  * Writes each accepted upload to `dir`, to build test sets for evaluating models
  * (`SAVE_UPLOADS_DIR`, development only; see docs/backend.md).
  */

@@ -77,7 +77,8 @@ export const MODEL_TABLE: Record<EnhanceMode, ModelSpec> = {
       upscale_mode: 'factor',
       upscale_factor: factor,
       output_format: 'jpg',
-      // Beat the default 0.1 on every test crop, from 4.6x to 100x.
+      // Picked over the default 0.1 wherever SeedVR2 won, at 10x and on the face too
+      // (docs/model-evaluation.md, 2026-10-08).
       noise_scale: 0.3,
     }),
   },

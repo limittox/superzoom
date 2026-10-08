@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * Model evaluation: runs every crop in a folder through a set of fal upscalers and settings,
  * downloads the results, and records size, time and estimated cost. See docs/model-evaluation.md.
@@ -238,6 +238,8 @@ async function main() {
   if (!key) throw new Error('FAL_KEY is not set (environment or .env.local)');
   const fal = createFalClient({ credentials: key });
   mkdirSync(OUT_DIR, { recursive: true });
+  // The report reads the crops from the same folder.
+  writeFileSync(join(OUT_DIR, 'run.json'), JSON.stringify({ cropsDir: CROPS_DIR, maxOutputPixels: MAX_OUTPUT_PIXELS }, null, 2));
 
   // Upload each crop once (as PNG too, for models that need it).
   const uploads = new Map();
@@ -290,7 +292,9 @@ async function execute(fal, run, upload) {
       url = image.url;
     }
     const file = `${crop.file.replace(/\.\w+$/, '')}__${candidate.id}.${image.content_type === 'image/png' ? 'png' : 'jpg'}`;
-    const bytes = Buffer.from(await (await fetch(image.url)).arrayBuffer());
+    const download = await fetch(image.url);
+    if (!download.ok) throw new Error(`Downloading the result failed: HTTP ${download.status}`);
+    const bytes = Buffer.from(await download.arrayBuffer());
     writeFileSync(join(OUT_DIR, file), bytes);
     Object.assign(record, { file, width: image.width ?? null, height: image.height ?? null, ms: Date.now() - started });
     console.log(`  ok   ${crop.file} ${candidate.id} in ${((Date.now() - started) / 1000).toFixed(1)} s`);

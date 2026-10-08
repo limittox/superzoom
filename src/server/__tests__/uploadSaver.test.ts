@@ -5,9 +5,19 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createUploadSaver, uploadFileName } from '../uploadSaver';
+import { createUploadSaver, uploadFileName, uploadSaverFromEnv } from '../uploadSaver';
 
 describe('upload saver (development only)', () => {
+  it('is only enabled in development with SAVE_UPLOADS_DIR set', () => {
+    expect(uploadSaverFromEnv({ NODE_ENV: 'development', SAVE_UPLOADS_DIR: 'eval/crops' })).toEqual(
+      expect.any(Function),
+    );
+    expect(uploadSaverFromEnv({ NODE_ENV: 'production', SAVE_UPLOADS_DIR: 'eval/crops' })).toBeUndefined();
+    expect(uploadSaverFromEnv({ NODE_ENV: 'test', SAVE_UPLOADS_DIR: 'eval/crops' })).toBeUndefined();
+    expect(uploadSaverFromEnv({ NODE_ENV: 'development' })).toBeUndefined();
+    expect(uploadSaverFromEnv({ NODE_ENV: 'development', SAVE_UPLOADS_DIR: '' })).toBeUndefined();
+  });
+
   const at = new Date(2026, 9, 8, 14, 30, 5, 7);
 
   it('names files by time, mode and size', () => {

@@ -229,11 +229,12 @@ describe('POST /api/enhance (submit)', () => {
   it('hands each accepted upload to the development saver, and ignores its failures', async () => {
     const { fal } = setup();
     const saveUpload = jest.fn().mockRejectedValueOnce(new Error('disk full')).mockResolvedValue(undefined);
+    const jobs = memoryJobStore();
     jest.spyOn(console, 'warn').mockImplementation(() => {});
     const handlers = createEnhanceHandlers({
       getUpscaler: () => createFalUpscaler(fal as never),
       getRateLimiter: () => createRateLimiter(memoryStore()),
-      getJobStore: () => memoryJobStore(),
+      getJobStore: () => jobs,
       log: () => {},
       saveUpload,
     });
@@ -244,8 +245,9 @@ describe('POST /api/enhance (submit)', () => {
       height: 1000,
       contentType: 'image/jpeg',
     });
-    // Invalid uploads are never saved.
+    // Invalid uploads and resubmissions of the same request are never saved.
     await handlers.submit(makeRequest({ image: makeJpeg(50, 50), requestId: '1f8fad5b-d9cb-469f-a165-70867728950e' }));
+    expect((await handlers.submit(makeRequest({ mode: 'pro' }))).status).toBe(202);
     expect(saveUpload).toHaveBeenCalledTimes(1);
     jest.restoreAllMocks();
   });

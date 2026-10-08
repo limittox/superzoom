@@ -282,15 +282,6 @@ export function createEnhanceHandlers({
         if (!image.ok) {
           throw new ApiError(image.code, image.message, STATUS_BY_CODE[image.code] ?? 400);
         }
-        if (saveUpload) {
-          // Best effort: a failed copy never fails the enhancement.
-          await saveUpload(bytes, {
-            mode,
-            width: image.width,
-            height: image.height,
-            contentType: image.contentType,
-          }).catch((err) => console.warn('[uploads] saving the upload failed:', err));
-        }
 
         const jobs = getJobStore();
         const created = (jobId: string) => Response.json({ jobId } satisfies EnhanceJobCreated, { status: 202 });
@@ -322,6 +313,17 @@ export function createEnhanceHandlers({
         const winner = await guarded(() => jobs.claimRequest(installId, requestId, pending.id, createdAt));
         if (winner === CANCELLED_REQUEST) throw submissionCancelled();
         if (winner !== pending.id) return created(winner);
+
+        if (saveUpload) {
+          // Only uploads that start a new job (not resubmissions or rejected requests). Best effort:
+          // a failed copy never fails the enhancement.
+          await saveUpload(bytes, {
+            mode,
+            width: image.width,
+            height: image.height,
+            contentType: image.contentType,
+          }).catch((err) => console.warn('[uploads] saving the upload failed:', err));
+        }
 
         // The upload runs without the lock, so a slow one can't outlive it. Polls meanwhile see
         // the job as queued; a cancel or a timeout meanwhile ends it, and the new pass is dropped.
