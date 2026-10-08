@@ -104,6 +104,8 @@ Device: user's Samsung (Back Quad Camera, Android 16), Android dev builds `b6185
 | 100x, Pro | ✅ 32.7 s on the 128×275 upload (45.7 s on the 95×204 upload before 4.5), two Topaz passes (4x, then 2.5x), labeled "AI-reconstructed (Pro)" |
 | 100x, Creative | ✅ 37.1 s on the 128×275 upload (17.4 s on the 95×204 upload before 4.5), two Clarity passes (4x, then 2.5x), labeled "AI-reconstructed (Creative)" |
 | 100x lens choice | ⚠️ one 100x capture of a closer or dimmer subject used the 3x lens (7.9 mm); far, well-lit subjects used the 5x lens. The phone's choice, as with the telephoto change |
+| Full sensor resolution for apps (`getSensorModes` on `feat/burst-spike`, 2026-10-08) | ❌ no `ULTRA_HIGH_RESOLUTION_SENSOR`, `SENSOR_PIXEL_MODE` not settable; 0.6x/1x/5x lenses report 2×2 binning but a 4080×3060 max-resolution array and only 1920×1080 max-resolution streams. Largest JPEG/YUV/RAW 4080×3060 (3x lens 4000×3000). RAW_SENSOR is available on every lens |
+| Night A/B (`captureNight` on `feat/burst-spike`, 2026-10-08) | ✅ capture works: Camera2 Night session with a drained preview, 4080×3060 at zoom 5 (18.6 mm lens), about 0.6 s after the request and 3 s in total. ➖ Quality: worse than normal at 30x after SeedVR2, slightly crisper at 100x but with more misread letters (`docs/capture-spike.md`) |
 | Night extension capabilities (`getExtensionInfo`) | ✅ night, bokeh and face-retouch honour `CONTROL_ZOOM_RATIO` over 0.6x–10x, largest JPEG 4080×3060; no capture latency reported. See the quality-gap item in `docs/follow-ups.md` |
 
 ## Enhancement jobs survive app switching (change `enhance-job-api`)
