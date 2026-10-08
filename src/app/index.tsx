@@ -105,6 +105,14 @@ function ZoomCamera() {
     }, [displayZoom]),
   );
 
+  // The camera resets its lens zoom to 1x whenever the session restarts (back from the result
+  // screen or the background), and zoom changes made while it was paused were cancelled.
+  // VisionCamera only sends the zoom when the value changes, so resend it once the session is
+  // running; otherwise a 100x preview would be the main lens plus a 20x digital crop.
+  const resendZoom = useCallback(() => {
+    camera?.controller?.setZoom(deviceZoom.get()).catch(handleCameraError);
+  }, [camera, deviceZoom]);
+
   // Keep the zoom inside the range if the maximum shrinks after learning the real photo size.
   useEffect(() => {
     if (displayZoom.get() > maxDisplayZoom) displayZoom.set(maxDisplayZoom);
@@ -212,6 +220,7 @@ function ZoomCamera() {
               isActive={isActive}
               outputs={[photoOutput]}
               zoom={deviceZoom as SharedValue<number>}
+              onStarted={resendZoom}
               onError={handleCameraError}
               constraints={CAMERA_CONSTRAINTS}
               resizeMode="cover"

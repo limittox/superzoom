@@ -4,8 +4,8 @@
  * VisionCamera calls `setZoom()` as soon as its controller exists, and again for zoom
  * changes while the camera is paused (result screen, app in background). On Android,
  * CameraX cancels those calls with `OperationCanceledException: Camera is not active.`
- * The initial zoom is applied when the session is configured and later changes go
- * through once the camera is active, so the cancellation is harmless.
+ * The camera screen resends the current zoom whenever the session starts (`onStarted`),
+ * so the cancellation is harmless.
  *
  * While pinching, each zoom update also cancels the previous one still in flight
  * (`Cancelled due to another zoom value being set.`); the latest value is applied.
