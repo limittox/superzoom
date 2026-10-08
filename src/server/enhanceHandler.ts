@@ -13,6 +13,7 @@ import {
 import { ApiError, errorResponse, providerError } from './errors';
 import { JOB_LOCK_MS, type JobRecord, type JobStore } from './jobStore';
 import type { RateLimiter } from './rateLimit';
+import type { SaveUpload } from './uploadSaver';
 import type { Upscaler } from './upscaler/types';
 import { validateImage } from './validate';
 
@@ -33,6 +34,8 @@ export interface EnhanceHandlerDeps {
   newId?: () => string;
   /** How long a cancel or a finishing submission waits for another request to release the job (default: the lock's lifetime). */
   lockWaitMs?: number;
+  /** Development only (`SAVE_UPLOADS_DIR`): keeps a copy of each accepted upload for model evaluation. */
+  saveUpload?: SaveUpload;
 }
 
 const INSTALL_ID_PATTERN = /^[A-Za-z0-9-]{8,128}$/;
@@ -173,6 +176,7 @@ export function createEnhanceHandlers({
   now = Date.now,
   newId = () => crypto.randomUUID(),
   lockWaitMs = JOB_LOCK_MS,
+  saveUpload,
 }: EnhanceHandlerDeps) {
   const logEnd = (job: JobRecord) =>
     log({
@@ -309,6 +313,17 @@ export function createEnhanceHandlers({
         const winner = await guarded(() => jobs.claimRequest(installId, requestId, pending.id, createdAt));
         if (winner === CANCELLED_REQUEST) throw submissionCancelled();
         if (winner !== pending.id) return created(winner);
+
+        if (saveUpload) {
+          // Only uploads that start a new job (not resubmissions or rejected requests). Best effort:
+          // a failed copy never fails the enhancement.
+          await saveUpload(bytes, {
+            mode,
+            width: image.width,
+            height: image.height,
+            contentType: image.contentType,
+          }).catch((err) => console.warn('[uploads] saving the upload failed:', err));
+        }
 
         // The upload runs without the lock, so a slow one can't outlive it. Polls meanwhile see
         // the job as queued; a cancel or a timeout meanwhile ends it, and the new pass is dropped.

@@ -42,6 +42,10 @@ example
 /ios
 /android
 
+# model evaluation: saved uploads and results (docs/model-evaluation.md)
+/eval/
+__pycache__/
+
 # local Expo module build output
 modules/*/android/build/
 modules/*/android/.cxx/
