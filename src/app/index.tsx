@@ -89,6 +89,7 @@ function ZoomCamera() {
     minDisplayZoom,
     maxDisplayZoom,
     nativeLimit,
+    resendZoom,
   } = zoomCamera;
   const isActive = useCameraActive();
   useCameraDiagnostics(device);
@@ -104,6 +105,9 @@ function ZoomCamera() {
       if (original) displayZoom.set(captureZoom);
     }, [displayZoom]),
   );
+
+  // The camera drops its lens zoom on every session restart; resend it (see resendZoom).
+  const onCameraStarted = useCallback(() => resendZoom(camera?.controller), [camera, resendZoom]);
 
   // Keep the zoom inside the range if the maximum shrinks after learning the real photo size.
   useEffect(() => {
@@ -212,6 +216,7 @@ function ZoomCamera() {
               isActive={isActive}
               outputs={[photoOutput]}
               zoom={deviceZoom as SharedValue<number>}
+              onStarted={onCameraStarted}
               onError={handleCameraError}
               constraints={CAMERA_CONSTRAINTS}
               resizeMode="cover"
