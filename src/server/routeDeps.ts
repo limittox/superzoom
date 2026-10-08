@@ -6,6 +6,7 @@ import { type JobStore, sharedMemoryJobStore, upstashJobStore } from './jobStore
 import { sharedMemoryStore } from './memoryStore';
 import { createRateLimiter, parseDailyLimit, type RateLimiter, upstashStore } from './rateLimit';
 import { createDefaultFalUpscaler } from './upscaler/fal';
+import { createUploadSaver } from './uploadSaver';
 import type { Upscaler } from './upscaler/types';
 
 const configError = () => new ApiError('provider_error', 'The enhancement service is not configured.', 500);
@@ -44,5 +45,10 @@ export function enhanceHandlers() {
       const client = getRedis();
       return (jobStore = client ? upstashJobStore(client) : sharedMemoryJobStore());
     },
+    // Development only: never keep uploads in production (specs/image-enhancement: No image retention).
+    saveUpload:
+      process.env.NODE_ENV === 'development' && process.env.SAVE_UPLOADS_DIR
+        ? createUploadSaver(process.env.SAVE_UPLOADS_DIR)
+        : undefined,
   }));
 }

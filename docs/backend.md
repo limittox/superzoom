@@ -17,6 +17,7 @@ None of these use the `EXPO_PUBLIC_` prefix, so none can end up in the app bundl
 | `UPSTASH_REDIS_REST_URL` | Yes in production | Upstash Redis REST URL, used for per-install rate-limit counters and job records. |
 | `UPSTASH_REDIS_REST_TOKEN` | Yes in production | Upstash Redis REST token. |
 | `DAILY_LIMIT` | No (default `50`) | Enhancements allowed per app install per rolling 24 hours. |
+| `SAVE_UPLOADS_DIR` | No, development only | Folder where the dev server keeps a copy of each accepted upload, for building model-evaluation test sets (for example `eval/crops`). Ignored outside development, so production never stores images. |
 
 App side: `EXPO_PUBLIC_API_URL` is the origin the app sends requests to (for example `https://superzoom.expo.app`). Leave it unset in development; relative requests then go to the dev server.
 
