@@ -352,6 +352,24 @@ describe('races between submissions, status checks and cancels', () => {
     expect(logs.filter((l) => l.outcome === 'cancelled')).toHaveLength(1);
   });
 
+  it("cancels the running pass when a status check that held the cancel's lock then fails to save", async () => {
+    const { handlers, fal, jobs } = setup();
+    const jobId = await submitted(handlers, { mode: 'pro', image: makeJpeg(128, 275) });
+    // The check holds the lock while fal reports pass 1 still running.
+    const release = hold(fal.queue.status, () => ({ status: 'IN_PROGRESS' }));
+    const check = poll(handlers, jobId);
+    await tick();
+    jest.spyOn(jobs, 'saveAndUnlock').mockRejectedValueOnce(new Error('redis down'));
+
+    const cancel = await call((r) => handlers.cancel(r, jobId), jobRequest(jobId, 'DELETE'));
+    expect(cancel.body.status).toBe('cancelled');
+    // The cancel couldn't take the lock, so it cancelled pass 1 itself.
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-1' });
+
+    release();
+    expect((await check).status).toBe(503);
+  });
+
   it('cancels a just-queued pass whose handle could not be saved, and releases the lock', async () => {
     const { handlers, fal, jobs } = setup();
     const jobId = await submitted(handlers, { mode: 'pro', image: makeJpeg(128, 275) });

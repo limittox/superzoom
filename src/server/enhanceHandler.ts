@@ -221,8 +221,13 @@ export function createEnhanceHandlers({
     }
     const { job, token } = read;
     if (!job || !isActive(job)) return job;
-    // Still locked: the holder sees the flag and cancels the job before it saves.
-    if (!token) return { ...job, status: 'cancelled' };
+    if (!token) {
+      // Still locked: the holder sees the flag and cancels the job before it saves. Cancel the
+      // active pass here too, in case the holder's save fails (it then drops only a pass it just
+      // queued) and nobody polls again. Cancelling a pass twice is harmless.
+      await getUpscaler().cancel(job);
+      return { ...job, status: 'cancelled' };
+    }
     let released = false;
     try {
       const cancelled = await cancelLocked(jobs, job, token);

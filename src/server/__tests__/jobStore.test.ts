@@ -13,6 +13,7 @@ import {
   upstashJobStore,
 } from '../jobStore';
 import { memoryStore, sharedMemoryStore } from '../memoryStore';
+import { createRateLimiter, upstashStore } from '../rateLimit';
 
 const job = (overrides: Partial<JobRecord> = {}): JobRecord => ({
   id: 'job-1',
@@ -222,6 +223,48 @@ describe('upstashJobStore requests', () => {
       [JSON.stringify(job()), String(JOB_TTL_MS - 60_000), 'job-1'],
     );
     expect(redis.eval).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('Upstash request count', () => {
+  // callBudget.test.ts counts one outgoing call per store operation; this checks that's true of
+  // the real client: each operation is exactly one HTTP request.
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it('makes one HTTP request per job store and rate limiter operation', async () => {
+    let reply: unknown = null;
+    const fetch = jest.fn(async (url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body);
+      const payload = url.endsWith('/pipeline') ? body.map(() => ({ result: reply })) : { result: reply };
+      return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(payload) };
+    });
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    const redis = new Redis({ url: 'https://example.upstash.io', token: 't', responseEncoding: false });
+    const store = upstashJobStore(redis, () => 1_000_000);
+    const limiter = createRateLimiter(upstashStore(redis), 50);
+
+    const operations: [string, unknown, () => Promise<unknown>][] = [
+      ['get', null, () => store.get('job-1')],
+      ['put', 'OK', () => store.put(job())],
+      ['findRequest', null, () => store.findRequest('install-123', 'req-1')],
+      ['create', 'job-1', () => store.create(job(), 'req-1')],
+      ['claimRequest (taken)', 'job-1', () => store.claimRequest('install-123', 'req-1', 'job-2', 1_000_000)],
+      ['releaseRequest', 1, () => store.releaseRequest('install-123', 'req-1')],
+      ['lockAndRead', [JSON.stringify(job()), 'tok', 1], () => store.lockAndRead('job-1', 'install-123')],
+      ['saveAndUnlock', 'saved', () => store.saveAndUnlock('job-1', 'tok', job(), { yieldToCancel: true })],
+      ['unlock', 1, () => store.unlock('job-1', 'tok')],
+      ['commitStarted', 'saved', () => store.commitStarted(job(), job({ status: 'cancelled' }))],
+      ['rate limit check', [1, 0, ''], () => limiter.check('install-123', 1_000_000)],
+    ];
+    for (const [name, result, run] of operations) {
+      reply = result;
+      fetch.mockClear();
+      await run();
+      expect([name, fetch.mock.calls.length]).toEqual([name, 1]);
+    }
   });
 });
 

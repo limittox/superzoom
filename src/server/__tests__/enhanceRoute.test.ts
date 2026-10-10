@@ -40,6 +40,11 @@ function fakeRedis() {
   const active = (job: { status: string }) => job.status === 'queued' || job.status === 'processing';
   const evalScript = async (script: string, keys: string[], args: string[]) => {
     if (script.includes('ZREMRANGEBYSCORE')) return [1, 0, ''];
+    if (script.includes('return ARGV[1]') && keys.length === 1) {
+      if (values.has(keys[0])) return values.get(keys[0]);
+      values.set(keys[0], args[0]);
+      return args[0];
+    }
     if (script.includes('return ARGV[3]')) {
       if (values.has(keys[1])) return values.get(keys[1]);
       values.set(keys[0], args[0]);

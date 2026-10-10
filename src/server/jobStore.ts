@@ -111,6 +111,13 @@ redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
 redis.call("SET", KEYS[2], ARGV[3], "PX", ARGV[2])
 return ARGV[3]`;
 
+/** KEYS: request. ARGV: job ID, TTL. Records the job ID unless one is recorded; returns the winner. */
+const CLAIM_SCRIPT = `
+local existing = redis.call("GET", KEYS[1])
+if existing then return existing end
+redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+return ARGV[1]`;
+
 /**
  * KEYS: job, lock, cancel. ARGV: install ID, new token, lock TTL, "1" to request a cancel.
  * Returns {job JSON or "", token or "", cancel flag 0/1}.
@@ -179,10 +186,7 @@ export function upstashJobStore(redis: Redis, now: () => number = Date.now): Job
       );
     },
     async claimRequest(installId, requestId, jobId, createdAt) {
-      const key = requestKey(installId, requestId);
-      const claimed = await redis.set(key, jobId, { nx: true, px: remainingMs(createdAt, now()) });
-      if (claimed === 'OK') return jobId;
-      return (await redis.get<string>(key)) ?? jobId;
+      return String(await redis.eval(CLAIM_SCRIPT, [requestKey(installId, requestId)], [jobId, ttl(createdAt)]));
     },
     async releaseRequest(installId, requestId) {
       await redis.del(requestKey(installId, requestId));
