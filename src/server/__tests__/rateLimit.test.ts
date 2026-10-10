@@ -1,4 +1,4 @@
-import type { Redis } from '@upstash/redis';
+import { Redis } from '@upstash/redis';
 
 import { createRateLimiter, DEFAULT_DAILY_LIMIT, parseDailyLimit, upstashStore } from '../rateLimit';
 import { memoryStore } from '../memoryStore';
@@ -57,29 +57,34 @@ describe('parseDailyLimit', () => {
 });
 
 describe('upstashStore', () => {
-  it('maps operations onto a mocked Redis client', async () => {
-    const exec = jest.fn().mockResolvedValue([1, 1]);
-    const pipeline = { zadd: jest.fn(), pexpire: jest.fn(), exec };
-    pipeline.zadd.mockReturnValue(pipeline);
-    pipeline.pexpire.mockReturnValue(pipeline);
-    const redis = {
-      zremrangebyscore: jest.fn().mockResolvedValue(0),
-      zcard: jest.fn().mockResolvedValue(50),
-      zrange: jest.fn().mockResolvedValue(['m', String(T0)]),
-      pipeline: jest.fn().mockReturnValue(pipeline),
-    };
+  it('runs a check as one script and maps its result', async () => {
+    const redis = { eval: jest.fn().mockResolvedValue([0, 50, String(T0)]) };
     const limiter = createRateLimiter(upstashStore(redis as unknown as Redis), 50);
 
-    const result = await limiter.check('x', T0 + HOUR);
+    expect(await limiter.check('x', T0 + HOUR)).toEqual({ allowed: false, retryAt: new Date(T0 + 24 * HOUR) });
+    expect(redis.eval).toHaveBeenCalledWith(
+      expect.stringContaining('ZREMRANGEBYSCORE'),
+      ['rl:x'],
+      [String(T0 + HOUR - 24 * HOUR), '50', String(T0 + HOUR), expect.any(String), String(24 * HOUR)],
+    );
 
-    expect(redis.zremrangebyscore).toHaveBeenCalledWith('rl:x', 0, T0 + HOUR - 24 * HOUR);
-    expect(redis.zrange).toHaveBeenCalledWith('rl:x', 0, 0, { withScores: true });
-    expect(result).toEqual({ allowed: false, retryAt: new Date(T0 + 24 * HOUR) });
+    redis.eval.mockResolvedValue([1, 3, '']);
+    expect(await limiter.check('x', T0 + HOUR)).toEqual({ allowed: true, remaining: 46 });
+    expect(redis.eval).toHaveBeenCalledTimes(2);
+  });
+});
 
-    redis.zcard.mockResolvedValue(0);
-    await limiter.check('x', T0 + HOUR);
-    expect(pipeline.zadd).toHaveBeenCalledWith('rl:x', { score: T0 + HOUR, member: expect.any(String) });
-    expect(pipeline.pexpire).toHaveBeenCalledWith('rl:x', 24 * HOUR);
-    expect(exec).toHaveBeenCalled();
+const integration = process.env.UPSTASH_INTEGRATION === '1' ? describe : describe.skip;
+integration('upstashStore (real Upstash)', () => {
+  it('counts within the window, refuses past the limit with the oldest entry, and forgets old entries', async () => {
+    const redis = new Redis({ url: process.env.UPSTASH_REDIS_REST_URL!, token: process.env.UPSTASH_REDIS_REST_TOKEN! });
+    const limiter = createRateLimiter(upstashStore(redis), 2);
+    const install = `test-${crypto.randomUUID()}`;
+    const t0 = Date.now();
+    expect(await limiter.check(install, t0)).toEqual({ allowed: true, remaining: 1 });
+    expect(await limiter.check(install, t0 + 1000)).toEqual({ allowed: true, remaining: 0 });
+    expect(await limiter.check(install, t0 + 2000)).toEqual({ allowed: false, retryAt: new Date(t0 + 24 * HOUR) });
+    expect((await limiter.check(install, t0 + 24 * HOUR + 1)).allowed).toBe(true);
+    await redis.del(`rl:${install}`);
   });
 });

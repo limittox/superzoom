@@ -3,12 +3,25 @@ import type { Redis } from '@upstash/redis';
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_DAILY_LIMIT = 50;
 
-/** The sorted-set operations the limiter needs; implemented by Upstash Redis or a test fake. */
-export interface SortedSetStore {
-  removeOlderThan(key: string, cutoffMs: number): Promise<void>;
-  count(key: string): Promise<number>;
-  oldestScore(key: string): Promise<number | null>;
-  add(key: string, scoreMs: number, member: string, ttlMs: number): Promise<void>;
+/** One sliding-window check: drop entries older than `cutoffMs`, then add one unless `limit` is reached. */
+export interface WindowHit {
+  cutoffMs: number;
+  limit: number;
+  nowMs: number;
+  member: string;
+  ttlMs: number;
+}
+
+/** `used` counts entries before this hit; `oldestMs` is set when the hit was refused. */
+export interface WindowHitResult {
+  allowed: boolean;
+  used: number;
+  oldestMs: number | null;
+}
+
+/** The window operation the limiter needs, in one round trip; implemented by Upstash Redis or memory. */
+export interface WindowStore {
+  hit(key: string, hit: WindowHit): Promise<WindowHitResult>;
 }
 
 export type RateLimitResult = { allowed: true; remaining: number } | { allowed: false; retryAt: Date };
@@ -17,39 +30,51 @@ export interface RateLimiter {
   check(installId: string, nowMs?: number): Promise<RateLimitResult>;
 }
 
-/**
- * Sliding 24-hour window per app installation (design.md decision 8).
- * Not atomic: concurrent requests from one install can overshoot by a request or two,
- * which is acceptable for a cost guard.
- */
-export function createRateLimiter(store: SortedSetStore, limit: number = DEFAULT_DAILY_LIMIT): RateLimiter {
+/** Sliding 24-hour window per app installation (design.md decision 8), checked and counted atomically. */
+export function createRateLimiter(store: WindowStore, limit: number = DEFAULT_DAILY_LIMIT): RateLimiter {
   return {
     async check(installId, nowMs = Date.now()) {
-      const key = `rl:${installId}`;
-      await store.removeOlderThan(key, nowMs - WINDOW_MS);
-      const used = await store.count(key);
-      if (used >= limit) {
-        const oldest = (await store.oldestScore(key)) ?? nowMs;
-        return { allowed: false, retryAt: new Date(oldest + WINDOW_MS) };
-      }
-      await store.add(key, nowMs, `${nowMs}:${crypto.randomUUID()}`, WINDOW_MS);
-      return { allowed: true, remaining: limit - used - 1 };
+      const result = await store.hit(`rl:${installId}`, {
+        cutoffMs: nowMs - WINDOW_MS,
+        limit,
+        nowMs,
+        member: `${nowMs}:${crypto.randomUUID()}`,
+        ttlMs: WINDOW_MS,
+      });
+      if (!result.allowed) return { allowed: false, retryAt: new Date((result.oldestMs ?? nowMs) + WINDOW_MS) };
+      return { allowed: true, remaining: limit - result.used - 1 };
     },
   };
 }
 
-export function upstashStore(redis: Redis): SortedSetStore {
+/**
+ * One script, so a check costs one request: EAS Hosting allows a request only 10 outgoing calls
+ * (see docs/backend.md). Returns {allowed (0/1), used, oldest score or ""}.
+ */
+const HIT_SCRIPT = `
+redis.call("ZREMRANGEBYSCORE", KEYS[1], 0, ARGV[1])
+local used = redis.call("ZCARD", KEYS[1])
+if used >= tonumber(ARGV[2]) then
+  local oldest = redis.call("ZRANGE", KEYS[1], 0, 0, "WITHSCORES")
+  return {0, used, oldest[2] or ""}
+end
+redis.call("ZADD", KEYS[1], ARGV[3], ARGV[4])
+redis.call("PEXPIRE", KEYS[1], ARGV[5])
+return {1, used, ""}`;
+
+export function upstashStore(redis: Redis): WindowStore {
   return {
-    async removeOlderThan(key, cutoffMs) {
-      await redis.zremrangebyscore(key, 0, cutoffMs);
-    },
-    count: (key) => redis.zcard(key),
-    async oldestScore(key) {
-      const [, score] = await redis.zrange<(string | number)[]>(key, 0, 0, { withScores: true });
-      return score == null ? null : Number(score);
-    },
-    async add(key, scoreMs, member, ttlMs) {
-      await redis.pipeline().zadd(key, { score: scoreMs, member }).pexpire(key, ttlMs).exec();
+    async hit(key, { cutoffMs, limit, nowMs, member, ttlMs }) {
+      const [allowed, used, oldest] = await redis.eval<string[], [number, number, number | string]>(
+        HIT_SCRIPT,
+        [key],
+        [String(cutoffMs), String(limit), String(nowMs), member, String(ttlMs)],
+      );
+      return {
+        allowed: Number(allowed) === 1,
+        used: Number(used),
+        oldestMs: oldest === '' || oldest == null ? null : Number(oldest),
+      };
     },
   };
 }

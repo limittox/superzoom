@@ -50,7 +50,7 @@ function setup({ limit = 50 } = {}) {
     log: (e) => logs.push(e),
     now: () => clock.now,
     newId: () => `job-${++ids}`,
-    lockWaitMs: 0,
+    lockRetryMs: 0,
   });
   return { fal, logs, handlers, jobs, clock };
 }
@@ -352,31 +352,15 @@ describe('races between submissions, status checks and cancels', () => {
     expect(logs.filter((l) => l.outcome === 'cancelled')).toHaveLength(1);
   });
 
-  it('cancels a just-queued pass whose handle could not be saved', async () => {
+  it('cancels a just-queued pass whose handle could not be saved, and releases the lock', async () => {
     const { handlers, fal, jobs } = setup();
     const jobId = await submitted(handlers, { mode: 'pro', image: makeJpeg(128, 275) });
-    const put = jobs.put.bind(jobs);
-    jest.spyOn(jobs, 'put').mockImplementationOnce(async () => {
-      throw new Error('redis down');
-    });
+    jest.spyOn(jobs, 'saveAndUnlock').mockRejectedValueOnce(new Error('redis down'));
     const res = await poll(handlers, jobId);
     expect(res.status).toBe(503);
     expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-2' });
-    // The stored job still points at pass 1, so the next check queues pass 2 again.
-    (jobs.put as jest.Mock).mockImplementation(put);
+    // The stored job still points at pass 1, so the next check (not locked out) queues pass 2 again.
     expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 2 });
-  });
-
-  it('keeps a just-queued pass when the cancel flag cannot be read after advancing', async () => {
-    const { handlers, fal, jobs } = setup();
-    const jobId = await submitted(handlers, { mode: 'pro', image: makeJpeg(128, 275) });
-    jest
-      .spyOn(jobs, 'isCancelRequested')
-      .mockResolvedValueOnce(false)
-      .mockRejectedValueOnce(new Error('redis timeout'));
-    expect((await poll(handlers, jobId)).body).toMatchObject({ status: 'processing', pass: 2 });
-    expect(fal.queue.cancel).not.toHaveBeenCalled();
-    expect((await jobs.get(jobId))!.providerRequestId).toBe('fal-2');
   });
 
   it('drops the new pass when the job timed out during a slow upload, without reviving it', async () => {
@@ -393,28 +377,41 @@ describe('races between submissions, status checks and cancels', () => {
     expect((await poll(handlers, 'job-1')).body).toMatchObject({ status: 'failed', error: { code: 'timeout' } });
   });
 
-  it.each(['get', 'isCancelRequested'] as const)(
-    'cancels the new pass when %s fails before its handle is saved',
-    async (method) => {
-      const { handlers, fal, jobs } = setup();
-      jest.spyOn(jobs, method).mockRejectedValueOnce(new Error('redis down'));
-      const res = await call(handlers.submit, makeRequest({ mode: 'pro' }));
-      expect(res.status).toBe(503);
-      expect(fal.queue.submit).toHaveBeenCalledTimes(1);
-      expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-1' });
-    },
-  );
+  it('cancels the new pass when its handle cannot be saved', async () => {
+    const { handlers, fal, jobs } = setup();
+    jest.spyOn(jobs, 'commitStarted').mockRejectedValueOnce(new Error('redis down'));
+    const res = await call(handlers.submit, makeRequest({ mode: 'pro' }));
+    expect(res.status).toBe(503);
+    expect(fal.queue.submit).toHaveBeenCalledTimes(1);
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-1' });
+  });
+
+  it('retries the commit once when a status check holds the job, then gives up and drops the pass', async () => {
+    const { handlers, fal, jobs } = setup();
+    const commit = jest.spyOn(jobs, 'commitStarted').mockResolvedValue('locked');
+    const res = await call(handlers.submit, makeRequest({ mode: 'pro' }));
+    expect(res.status).toBe(503);
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(fal.queue.cancel).toHaveBeenCalledWith('topaz/upscale/image/precision', { requestId: 'fal-1' });
+  });
+
+  it('saves the pass after a retry when the status check finished in time', async () => {
+    const { handlers, fal, jobs } = setup();
+    const commit = jobs.commitStarted.bind(jobs);
+    jest.spyOn(jobs, 'commitStarted').mockResolvedValueOnce('locked').mockImplementation(commit);
+    expect((await call(handlers.submit, makeRequest({ mode: 'pro' }))).body).toEqual({ jobId: 'job-1' });
+    expect(fal.queue.cancel).not.toHaveBeenCalled();
+    expect((await jobs.get('job-1'))!.providerRequestId).toBe('fal-1');
+  });
 
   it('logs a cancel once, when its save succeeds, retrying a failed save on the next check', async () => {
     const { handlers, jobs, logs } = setup();
     const jobId = await submitted(handlers, { mode: 'pro' });
-    const put = jobs.put.bind(jobs);
-    const spy = jest.spyOn(jobs, 'put').mockRejectedValueOnce(new Error('redis down'));
+    jest.spyOn(jobs, 'saveAndUnlock').mockRejectedValueOnce(new Error('redis down'));
     const res = await call((r) => handlers.cancel(r, jobId), jobRequest(jobId, 'DELETE'));
     expect(res.status).toBe(503);
     expect(logs.filter((l) => l.outcome === 'cancelled')).toHaveLength(0);
 
-    spy.mockImplementation(put);
     expect((await poll(handlers, jobId)).body.status).toBe('cancelled');
     expect((await poll(handlers, jobId)).body.status).toBe('cancelled');
     expect(logs.filter((l) => l.outcome === 'cancelled')).toHaveLength(1);
