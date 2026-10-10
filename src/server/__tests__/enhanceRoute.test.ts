@@ -26,28 +26,65 @@ function submitRequest(requestId = '0f8fad5b-d9cb-469f-a165-70867728950e') {
 const jobRequest = (jobId: string, method: 'GET' | 'DELETE' = 'GET') =>
   new Request(`http://localhost/api/enhance/${jobId}`, { method, headers: { [INSTALL_ID_HEADER]: INSTALL_ID } });
 
-/** Just enough of Upstash for the rate limiter (sorted sets) and the job store (get/set/del). */
+/**
+ * Just enough of Upstash for the wiring: plain get/set/del, and `eval` mimicking each script by
+ * what it contains. The real scripts run against Upstash in jobStore.test.ts (UPSTASH_INTEGRATION=1).
+ */
 function fakeRedis() {
   const values = new Map<string, unknown>();
-  const pipeline = { zadd: jest.fn(), pexpire: jest.fn(), exec: jest.fn().mockResolvedValue([]) };
-  pipeline.zadd.mockReturnValue(pipeline);
-  pipeline.pexpire.mockReturnValue(pipeline);
+  // Like the real client, values written as JSON strings read back as objects.
+  const read = (key: string) => {
+    const v = values.get(key);
+    return typeof v === 'string' && v.startsWith('{') ? JSON.parse(v) : (v ?? null);
+  };
+  const active = (job: { status: string }) => job.status === 'queued' || job.status === 'processing';
+  const evalScript = async (script: string, keys: string[], args: string[]) => {
+    if (script.includes('ZREMRANGEBYSCORE')) return [1, 0, ''];
+    if (script.includes('return ARGV[1]') && keys.length === 1) {
+      if (values.has(keys[0])) return values.get(keys[0]);
+      values.set(keys[0], args[0]);
+      return args[0];
+    }
+    if (script.includes('return ARGV[3]')) {
+      if (values.has(keys[1])) return values.get(keys[1]);
+      values.set(keys[0], args[0]);
+      values.set(keys[1], args[2]);
+      return args[2];
+    }
+    if (script.includes('PTTL')) {
+      const job = read(keys[0]);
+      if (!job || job.installId !== args[0]) return ['', '', 0];
+      if (!active(job)) return [job, '', 0];
+      if (args[3] === '1') values.set(keys[2], '1');
+      let token = '';
+      if (!values.has(keys[1])) values.set(keys[1], (token = args[1]));
+      return [job, token, values.has(keys[2]) ? 1 : 0];
+    }
+    if (script.includes('"cancel-requested"')) {
+      if (args[3] === '1' && values.has(keys[2])) return 'cancel-requested';
+      if (args[1] !== '') values.set(keys[0], args[1]);
+      if (values.get(keys[1]) === args[0]) values.delete(keys[1]);
+      return 'saved';
+    }
+    if (script.includes('"locked"')) {
+      if (values.has(keys[1])) return 'locked';
+      const job = read(keys[0]);
+      if (!job || !active(job) || job.providerRequestId) return 'not-waiting';
+      if (values.has(keys[2])) return values.set(keys[0], args[1]), 'cancelled';
+      return values.set(keys[0], args[0]), 'saved';
+    }
+    // The compare-and-delete unlock script.
+    return values.get(keys[0]) === args[0] ? (values.delete(keys[0]), 1) : 0;
+  };
   return {
-    zremrangebyscore: jest.fn().mockResolvedValue(0),
-    zcard: jest.fn().mockResolvedValue(0),
-    zrange: jest.fn().mockResolvedValue([]),
-    pipeline: () => pipeline,
-    get: jest.fn(async (key: string) => values.get(key) ?? null),
+    get: jest.fn(async (key: string) => read(key)),
     set: jest.fn(async (key: string, value: unknown, opts: { nx?: boolean }) => {
       if (opts?.nx && values.has(key)) return null;
       values.set(key, value);
       return 'OK';
     }),
     del: jest.fn(async (key: string) => (values.delete(key) ? 1 : 0)),
-    // The compare-and-delete unlock script.
-    eval: jest.fn(async (_script: string, [key]: string[], [token]: string[]) =>
-      values.get(key) === token ? (values.delete(key), 1) : 0,
-    ),
+    eval: jest.fn(evalScript),
   };
 }
 

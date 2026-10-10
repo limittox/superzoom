@@ -55,6 +55,16 @@ App side: `EXPO_PUBLIC_API_URL` is the origin the app sends requests to (for exa
 
    `{"jobId":"...","status":"processing","mode":"enhance","pass":1,"passes":1}` becomes `{"jobId":"...","status":"done","mode":"enhance","result":{"url":"https://...","width":3200,"height":3200,"mode":"enhance"}}`. Errors are `{"error":{"code":"...","message":"..."}}`; see `ERROR_CODES` in `src/shared/enhance.ts`.
 
+## Test the Upstash scripts
+
+The unit tests run the job store and rate limiter against in-memory versions. To run the same tests against the real Upstash scripts (unique `test-…` keys that expire within the hour), with the two Upstash variables set:
+
+```sh
+UPSTASH_INTEGRATION=1 npx jest -c jest.integration.config.js
+```
+
+Run it after changing a script in `src/server/jobStore.ts` or `src/server/rateLimit.ts`.
+
 ## Deploy to EAS Hosting
 
 1. Log in and link the project (first time only): `npx eas-cli@latest login`, then `npx eas-cli@latest init`.
@@ -97,6 +107,7 @@ An unknown or expired job, or another install's, gets `404 job_not_found`.
 - **Overlapping requests don't duplicate a pass or undo a cancel.** Every change to an active job happens under a per-job lock with an owner token. The lock lasts 60 s, longer than any advance, whose fal calls each give up after 15 s (a slow submit is aborted, never abandoned). Other checks report the stored state. A cancel that arrives during a check is recorded as a flag that the check acts on before saving.
 - **The upload runs outside the lock.** The submission then saves the job only if it's still waiting for its first pass; if it was cancelled or timed out meanwhile, the new pass is cancelled instead.
 - **A dropped connection or the app going to the background doesn't cancel anything.** Only `DELETE` and timeouts stop fal work.
+- **Each request makes at most 10 outgoing calls,** fal and Upstash together, because that's all EAS Hosting allows ("Too many subrequests by single Worker invocation" past it; measured 2026-10-10, not documented by Expo). So every store step is one Upstash call: the multi-step ones (create a job with its request ID, lock and read a job with its cancel flag, save and unlock, commit a submission, the rate-limit check) are Lua scripts, and nothing waits on a lock by polling it. A submit makes 7 calls, a status check at most 5, a cancel 3. `src/server/__tests__/callBudget.test.ts` fails if any path goes over 10; locally there's no limit, so only that test catches it.
 - **Records expire one hour after submission,** the same as fal's stored files. Job records (`job:{id}` in Upstash, in memory during development) hold the job's state and fal URLs, never image data.
 
 ## Models and cost
